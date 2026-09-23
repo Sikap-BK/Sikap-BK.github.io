@@ -48,9 +48,9 @@ const API_ARGUMEN = {
   catatMasuk                : ['token'],
   refreshData               : ['token'],
   ubahPasswordSendiri       : ['token', 'passwordLama', 'passwordBaru'],
-  simpanPoinBatch           : ['token', 'payload'],
+  simpanPoinBatch           : ['token', 'catatan'],
   editRiwayat               : ['token', 'payload'],
-  hapusRiwayat              : ['token', 'id'],
+  hapusRiwayat              : ['token', 'idRiwayat'],
   simpanTindakLanjut        : ['token', 'payload'],
   hapusTindakLanjut         : ['token', 'idGrup'],
   tuntaskanTindakLanjut     : ['token', 'idGrup'],
@@ -58,21 +58,22 @@ const API_ARGUMEN = {
   hapusEvaluasi             : ['token', 'id'],
   simpanPengaduan           : ['token', 'payload'],
   tambahCatatanPengaduan    : ['token', 'payload'],
-  tuntaskanPengaduan        : ['token', 'id', 'statusKasus'],
+  tuntaskanPengaduan        : ['token', 'id'],
   hapusPengaduan            : ['token', 'id'],
   simpanMaster              : ['token', 'namaSheet', 'record'],
   hapusMaster               : ['token', 'namaSheet', 'id'],
-  setGuruBK                 : ['token', 'idGuru', 'jadikan'],
+  setGuruBK                 : ['token', 'idGuru', 'aktifkan'],
   setKepalaSekolah          : ['token', 'idGuru'],
   importMassal              : ['token', 'jenis', 'baris'],
-  getTemplateImport         : ['token', 'jenis'],
-  simpanKonfigurasi         : ['token', 'konfigurasi'],
-  unggahBerkas              : ['token', 'payload'],
+  getTemplateImport         : ['jenis'],
+  simpanKonfigurasi         : ['token', 'perubahan'],
+  unggahBerkas              : ['token', 'kategori', 'base64', 'namaFile', 'mime'],
   ujiNotifikasiEmail        : ['token', 'tujuan'],
   buatLaporanPDF            : ['token', 'opsi'],
   buatLaporanPendampinganPDF: ['token', 'opsi'],
   buatSuratPDF              : ['token', 'opsi']
 };
+
 
 /** Aksi yang boleh lewat GET — sisanya wajib POST (lihat Kode.gs) */
 const API_BACA = ['doLogin', 'getDaftarGuruLogin', 'refreshData'];
