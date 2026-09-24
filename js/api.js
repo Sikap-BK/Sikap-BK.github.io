@@ -71,7 +71,11 @@ const API_ARGUMEN = {
   ujiNotifikasiEmail        : ['token', 'tujuan'],
   buatLaporanPDF            : ['token', 'opsi'],
   buatLaporanPendampinganPDF: ['token', 'opsi'],
-  buatSuratPDF              : ['token', 'opsi']
+  buatSuratPDF              : ['token', 'opsi'],
+  // v3.2 — kelola siswa sekaligus (Admin)
+  naikKelasMassal           : ['token', 'payload'],
+  resetPoinMassal           : ['token', 'payload'],
+  hapusSiswaMassal          : ['token', 'payload']
 };
 
 
@@ -83,6 +87,13 @@ const API_BACA = ['doLogin', 'getDaftarGuruLogin', 'refreshData'];
  * @return {Promise<object>} jawaban { success, data, message }
  */
 async function apiKirim(aksi, args) {
+  // Sekolah tidak dikenal → berhenti di sini, jangan menembak alamat kosong.
+  // Tanpa ini, fetch('') menghasilkan galat jaringan yang tidak berarti
+  // apa-apa bagi guru, dan menutupi pesan sebenarnya yang sudah tampil.
+  if (!GAS_URL) {
+    throw new Error('Sekolah belum dikenali. Periksa alamat aplikasi Anda.');
+  }
+
   const namaArg = API_ARGUMEN[aksi];
   if (!namaArg) throw new Error('Aksi tidak dikenal di sisi aplikasi: ' + aksi);
 

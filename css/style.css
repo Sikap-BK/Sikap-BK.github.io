@@ -717,6 +717,51 @@ table.tabel tbody tr:hover td { background: var(--navy-soft); }
 table.tabel tr.baris-merah td { background: var(--merah-bg); }
 table.tabel tr.baris-merah:hover td { background: var(--merah-bg); filter: brightness(.97); }
 
+/* ── Pilih banyak siswa: naik kelas, reset poin, hapus (v3.2) ─────────── */
+table.tabel th.kol-pilih,
+table.tabel td.kol-pilih { width: 44px; padding: 0 0 0 var(--s-sm); }
+.sel-pilih {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 44px; margin: 0; cursor: pointer;      /* sasaran sentuh ≥ 40px */
+}
+.sel-pilih .form-check-input { margin: 0; cursor: pointer; }
+table.tabel tr.dipilih td,
+table.tabel tr.baris-merah.dipilih td { background: var(--navy-soft); }
+table.tabel tr.dipilih td.kol-pilih { box-shadow: inset 3px 0 0 var(--navy); }
+
+.bilah-pilih {
+  position: sticky; bottom: 12px; z-index: 5;
+  margin-top: var(--s-md);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 10px 12px 10px 16px;
+  background: var(--bg-surface); color: var(--text-primary);
+  border: 1px solid var(--navy); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  animation: bilahMuncul .18s ease-out;
+}
+@keyframes bilahMuncul { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.bilah-pilih .info { font-size: 13.5px; margin-right: auto; }
+.bilah-pilih .info .sub { color: var(--text-secondary); }
+.bilah-pilih .tombol { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.teks-bahaya, .btn.teks-bahaya:hover { color: var(--merah-tx); }
+.form-check-input[type=checkbox]:indeterminate { background-color: var(--navy); border-color: var(--navy); }
+[data-theme="dark"] .form-check-input[type=checkbox]:indeterminate {
+  --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%230b1220' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='M6 10h8'/%3e%3c/svg%3e");
+}
+.pilihan-centang {
+  display: flex; align-items: flex-start; gap: 10px; margin: 0; cursor: pointer;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
+}
+.pilihan-centang:has(input:checked) { border-color: var(--navy); background: var(--navy-soft); }
+.pilihan-centang .form-check-input { flex: 0 0 auto; margin: 1px 0 0; }
+.pilihan-centang .ket { display: block; font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+@media (max-width: 575.98px) {
+  .bilah-pilih { bottom: 8px; padding: 10px; }
+  .bilah-pilih .info { width: 100%; }
+  .bilah-pilih .tombol { width: 100%; }
+  .bilah-pilih .tombol .btn { flex: 1 1 auto; padding-left: 10px; padding-right: 10px; }
+}
+
 /* ── Tabel kasus Tindak Lanjut ──────────────────────────────────────────
    Kolomnya banyak, jadi jarak dalam sel dirapatkan dan kolom rincian dibatasi
    lebarnya agar seluruh tabel muat tanpa perlu digeser ke samping.          */

@@ -56,7 +56,10 @@ const AppState = {
   },
   // nisnTerpilih = array, memungkinkan satu catatan untuk banyak siswa sekaligus
   draftPoin   : { jenis: 'Pelanggaran', nisnTerpilih: [], idJenis: '', foto: null, cari: '', kelasCari: 'SEMUA' },
-  detailNisn  : null
+  detailNisn  : null,
+  // v3.2 — ID siswa yang dicentang di Data Siswa (Admin), dan urutan yang sedang tampil
+  pilihSiswa  : [],
+  siswaTampil : []
 };
 
 /** Jenis nomor identitas guru yang lazim dipakai sekolah di Indonesia */
@@ -793,6 +796,8 @@ function bukaModalForm(judul, isiHtml, onSimpan, labelSimpan) {
   document.getElementById('isiModalForm').innerHTML = isiHtml;
   const btn = document.getElementById('tombolSimpanModal');
   btn.innerHTML = '<i class="bi bi-save"></i> ' + (labelSimpan || 'Simpan');
+  btn.disabled = false;
+  btn.classList.remove('btn-bahaya'); btn.classList.add('btn-navy');   // modal hapus menggantinya merah
   const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('modalForm'));
   btn.onclick = function () { onSimpan(modal); };
   modal.show();
@@ -2049,6 +2054,14 @@ function renderDataSiswa() {
   }
   data = urutSiswa(data);   // kelas menaik secara alami (7A, 8A, 9A, 10A), lalu nama A→Z
 
+  // Centang hanya berlaku untuk siswa yang SEDANG TAMPIL. Pindah filter kelas
+  // otomatis membuang centang yang tersembunyi — supaya tidak ada siswa yang
+  // ikut dinaikkan/dihapus tanpa terlihat di layar.
+  AppState.siswaTampil = bolehEdit ? data.map(function (s) { return String(s.ID); }) : [];
+  AppState.pilihSiswa = AppState.pilihSiswa.filter(function (id) {
+    return AppState.siswaTampil.indexOf(id) !== -1;
+  });
+
   const opsiKelas = '<option value="SEMUA">Semua Kelas</option>' + AppState.kelas.map(function (k) {
     return '<option value="' + escHtml(k) + '"' + (f.kelasDipilih === k ? ' selected' : '') + '>Kelas ' + escHtml(k) + '</option>';
   }).join('');
@@ -2090,9 +2103,11 @@ function renderDataSiswa() {
     '</div>' +
   '</div></div>' +
 
-  '<div class="bungkus-tabel">' + tabelSiswa(data, bolehEdit, satuKelas) + '</div>';
+  '<div class="bungkus-tabel">' + tabelSiswa(data, bolehEdit, satuKelas) + '</div>' +
+  (bolehEdit ? '<div id="bilahPilihSiswa">' + bilahPilihSiswa() + '</div>' : '');
 
   document.getElementById('section-dataSiswa').innerHTML = html;
+  if (bolehEdit) perbaruiCentangSemua();
 }
 
 /**
@@ -2145,7 +2160,11 @@ function tabelSiswa(data, bolehEdit, satuKelas) {
     return '<div class="kosong"><i class="bi bi-search"></i><h6>Tidak ada siswa yang cocok</h6>' +
       '<p class="mb-0">Ubah kata kunci atau filter untuk menampilkan data.</p></div>';
   }
+  const pilih = AppState.pilihSiswa;
   return '<table class="tabel"><thead><tr>' +
+      (bolehEdit ? '<th class="kol-pilih"><label class="sel-pilih" title="Pilih semua yang tampil">' +
+        '<input type="checkbox" class="form-check-input" id="centangSemuaSiswa" ' +
+        'aria-label="Pilih semua siswa yang tampil" onchange="pilihSemuaSiswa(this.checked)"></label></th>' : '') +
       '<th style="width:48px">NO</th><th>NAMA SISWA</th><th>NISN</th>' +
       (satuKelas ? '' : '<th>KELAS</th>') +
       '<th class="text-center">POIN</th><th>STATUS ZONA</th>' +
@@ -2155,7 +2174,13 @@ function tabelSiswa(data, bolehEdit, satuKelas) {
     data.map(function (s, i) {
       const z = zonaDari(s.PoinSaatIni);
       const terakhir = AppState.riwayat.filter(function (r) { return String(r.NISN) === String(s.NISN); })[0];
-      return '<tr class="' + (z === 'Merah' ? 'baris-merah' : '') + '">' +
+      const dicentang = bolehEdit && pilih.indexOf(String(s.ID)) !== -1;
+      return '<tr class="' + (z === 'Merah' ? 'baris-merah' : '') + (dicentang ? ' dipilih' : '') +
+          '" data-id="' + escHtml(s.ID) + '">' +
+        (bolehEdit ? '<td class="kol-pilih"><label class="sel-pilih">' +
+          '<input type="checkbox" class="form-check-input centang-siswa" data-id="' + escHtml(s.ID) + '"' +
+          (dicentang ? ' checked' : '') + ' aria-label="Pilih ' + escHtml(s.Nama) + '" ' +
+          'onchange="pilihSiswa(this.dataset.id, this.checked)"></label></td>' : '') +
         '<td class="mono">' + String(i + 1).padStart(2, '0') + '</td>' +
         '<td><div class="sel-nama"><div class="avatar-mini">' + inisial(s.Nama) + '</div>' +
           '<div><div style="font-weight:600">' + escHtml(s.Nama) + '</div>' +
@@ -2252,6 +2277,318 @@ function hapusSiswa(id, nama) {
   konfirmasi('Hapus Data Siswa',
     'Hapus data "' + nama + '"? Riwayat poin siswa ini tetap tersimpan di arsip.',
     function () { hapusMasterData(SHEET.SISWA, id); }, 'Ya, Hapus');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// BAGIAN 11b: KELOLA SISWA SEKALIGUS — naik kelas, reset poin, hapus (v3.2)
+// ════════════════════════════════════════════════════════════════════
+//
+// Admin mencentang siswa di tabel Data Siswa, lalu memilih aksinya pada
+// bilah yang muncul di bawah tabel. Mencentang TIDAK menggambar ulang
+// seluruh halaman — hanya baris, kotak "pilih semua", dan bilahnya — supaya
+// posisi gulir tetap di tempat saat mencentang satu per satu kelas berisi
+// 36 siswa.
+
+/** Catatan riwayat yang tercatat sebelum poin siswa direset */
+function catatanArsip(r) {
+  return String(r && r.Status || '').trim().toLowerCase() === 'arsip';
+}
+
+function siswaTerpilih() {
+  const set = {};
+  AppState.pilihSiswa.forEach(function (id) { set[id] = true; });
+  return urutSiswa(AppState.siswa.filter(function (s) { return set[String(s.ID)] === true; }));
+}
+
+function kelasDariDaftar(daftar) {
+  const k = [];
+  daftar.forEach(function (s) {
+    const x = String(s.Kelas || '').trim();
+    if (x && k.indexOf(x) === -1) k.push(x);
+  });
+  return k.sort(bandingKelas);
+}
+
+function pilihSiswa(id, centang) {
+  id = String(id);
+  const i = AppState.pilihSiswa.indexOf(id);
+  if (centang && i === -1) AppState.pilihSiswa.push(id);
+  if (!centang && i !== -1) AppState.pilihSiswa.splice(i, 1);
+  perbaruiTampilanPilih();
+}
+
+function pilihSemuaSiswa(centang) {
+  AppState.pilihSiswa = centang ? AppState.siswaTampil.slice() : [];
+  perbaruiTampilanPilih();
+}
+
+function batalPilihSiswa() { pilihSemuaSiswa(false); }
+
+/** Menyegarkan tanda centang tanpa menggambar ulang halaman */
+function perbaruiTampilanPilih() {
+  const sek = document.getElementById('section-dataSiswa');
+  if (!sek) return;
+  sek.querySelectorAll('input.centang-siswa').forEach(function (el) {
+    const on = AppState.pilihSiswa.indexOf(String(el.dataset.id)) !== -1;
+    el.checked = on;
+    const tr = el.closest('tr');
+    if (tr) tr.classList.toggle('dipilih', on);
+  });
+  perbaruiCentangSemua();
+  const bilah = document.getElementById('bilahPilihSiswa');
+  if (bilah) bilah.innerHTML = bilahPilihSiswa();
+}
+
+function perbaruiCentangSemua() {
+  const el = document.getElementById('centangSemuaSiswa');
+  if (!el) return;
+  const n = AppState.pilihSiswa.length, total = AppState.siswaTampil.length;
+  el.checked = total > 0 && n === total;
+  el.indeterminate = n > 0 && n < total;
+}
+
+function bilahPilihSiswa() {
+  const dipilih = siswaTerpilih();
+  if (!dipilih.length) return '';
+  const kelas = kelasDariDaftar(dipilih);
+  return '<div class="bilah-pilih" role="region" aria-label="Aksi untuk siswa terpilih">' +
+    '<div class="info"><b>' + dipilih.length + '</b> siswa dipilih' +
+      '<span class="sub"> • ' + (kelas.length === 1 ? 'Kelas ' + escHtml(kelas[0]) : kelas.length + ' kelas') + '</span></div>' +
+    '<div class="tombol">' +
+      '<button class="btn btn-navy" onclick="bukaNaikKelas()"><i class="bi bi-arrow-up-circle"></i> Naik Kelas</button>' +
+      '<button class="btn btn-hantu" onclick="bukaResetPoin()"><i class="bi bi-arrow-counterclockwise"></i> Reset Poin</button>' +
+      '<button class="btn btn-hantu teks-bahaya" onclick="bukaHapusSiswaMassal()"><i class="bi bi-trash"></i> Hapus</button>' +
+      '<button class="btn btn-hantu" onclick="batalPilihSiswa()" title="Batalkan pilihan" aria-label="Batalkan pilihan">' +
+        '<i class="bi bi-x-lg"></i></button>' +
+    '</div>' +
+  '</div>';
+}
+
+/** Daftar nama singkat untuk modal: 6 nama pertama + "dan N lainnya" */
+function ringkasNama(daftar) {
+  const tampil = daftar.slice(0, 6).map(function (s) { return escHtml(s.Nama); }).join(', ');
+  return tampil + (daftar.length > 6 ? ', dan ' + (daftar.length - 6) + ' lainnya' : '');
+}
+
+/** Tingkat kelas sebagai angka: 7A → 7, VIII-B → 8, "Kelas Khusus" → 0 */
+function tingkatKelas(kelas) {
+  const k = String(kelas || '').trim();
+  const a = k.match(/\d+/);
+  if (a) return Number(a[0]);
+  const romawi = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII'];
+  const r = k.match(/^(XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)(?![A-Z])/i);
+  return r ? romawi.indexOf(r[1].toUpperCase()) + 1 : 0;
+}
+
+/**
+ * Tebakan kelas berikutnya: 7A → 8A, VII-B → VIII-B.
+ * Hanya dipakai bila kelas hasil tebakan memang sudah ada.
+ */
+function tebakKelasBerikut(kelas) {
+  const k = String(kelas || '').trim();
+  const angka = k.match(/^(\D*?)(\d+)(.*)$/);
+  if (angka) return angka[1] + (Number(angka[2]) + 1) + angka[3];
+  const romawi = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII'];
+  const r = k.match(/^(XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)(?![A-Z])(.*)$/i);
+  if (r) {
+    const i = romawi.indexOf(r[1].toUpperCase());
+    if (i !== -1 && i < romawi.length - 1) return romawi[i + 1] + r[2];
+  }
+  return '';
+}
+
+// ── Naik kelas ─────────────────────────────────────────────────────────
+function bukaNaikKelas() {
+  const dipilih = siswaTerpilih();
+  if (!dipilih.length) return;
+  const kelasAsal = kelasDariDaftar(dipilih);
+  if (kelasAsal.length !== 1) {
+    return toast('Pilih satu kelas',
+      'Naik kelas dikerjakan per kelas. Saring dulu satu kelas, lalu centang siswanya.', 'peringatan');
+  }
+  const asal = kelasAsal[0];
+  const tinggal = AppState.siswa.filter(function (s) {
+    return String(s.Kelas).trim() === asal && AppState.pilihSiswa.indexOf(String(s.ID)) === -1;
+  });
+  const tebakan = tebakKelasBerikut(asal);
+  const awal = AppState.kelas.indexOf(tebakan) !== -1 ? tebakan : '';
+  // Kelas asal = tingkat tertinggi yang ada (mis. 9 di SMP) → kemungkinan besar lulus
+  const tingkatAsal = tingkatKelas(asal);
+  const puncak = tingkatAsal > 0 && AppState.kelas.every(function (k) { return tingkatKelas(k) <= tingkatAsal; });
+  const poinAwal = AppState.konfigurasi.poinAwal || 100;
+
+  bukaModalForm('Naik Kelas',
+    '<p class="mb-3"><b>' + dipilih.length + ' siswa</b> dari kelas <b>' + escHtml(asal) + '</b>' +
+      '<span class="d-block text-secondary-2" style="font-size:12.5px;margin-top:2px">' + ringkasNama(dipilih) + '</span></p>' +
+    (tinggal.length
+      ? '<div class="kotak-info mb-3"><i class="bi bi-person-dash"></i><div><b>' + tinggal.length +
+        ' siswa tidak dicentang</b> dan tetap di kelas ' + escHtml(asal) + ': ' + ringkasNama(tinggal) + '</div></div>'
+      : '') +
+    '<div class="mb-3"><label class="form-label" for="fNaikTujuan">Naik ke kelas <span class="wajib">*</span></label>' +
+      '<input class="form-control" id="fNaikTujuan" list="daftarKelasTujuan" maxlength="20" autocomplete="off" ' +
+      'placeholder="Ketik atau pilih kelas" value="' + escHtml(awal) + '" oninput="cekKelasTujuan()">' +
+      '<datalist id="daftarKelasTujuan">' + AppState.kelas.filter(function (k) { return k !== asal; })
+        .map(function (k) { return '<option value="' + escHtml(k) + '">'; }).join('') + '</datalist>' +
+      (puncak ? '<div class="form-text">Kelas ' + escHtml(asal) + ' adalah tingkat tertinggi. ' +
+        'Bila siswanya lulus, gunakan tombol <b>Hapus</b>.</div>' : '') +
+      '<div id="peringatanTujuan"></div></div>' +
+    '<label class="pilihan-centang" for="fNaikReset">' +
+      '<input class="form-check-input" type="checkbox" id="fNaikReset">' +
+      '<span><b>Reset poin ke ' + escHtml(poinAwal) + '</b>' +
+      '<span class="ket">Riwayat pelanggaran &amp; kebaikan tetap tersimpan dan tetap bisa dibaca.</span></span></label>',
+    function (modal) {
+      const tujuan = document.getElementById('fNaikTujuan').value.trim();
+      if (!tujuan) return toast('Belum lengkap', 'Isi kelas tujuan.', 'peringatan');
+      if (tujuan === asal) return toast('Kelas sama', 'Kelas tujuan sama dengan kelas asal.', 'peringatan');
+      const reset = document.getElementById('fNaikReset').checked;
+      jalankanMassal('naikKelasMassal',
+        { idSiswa: dipilih.map(function (s) { return String(s.ID); }), kelasTujuan: tujuan, resetPoin: reset },
+        modal,
+        function (data) {
+          terapkanHasilMassal(data, { kelas: data.kelasTujuan, reset: data.resetPoin });
+          // Kelas asal kosong setelah semua naik → filter dikembalikan ke Semua Kelas
+          if (AppState.kelas.indexOf(AppState.filter.kelasDipilih) === -1 && AppState.filter.kelasDipilih !== 'SEMUA') {
+            AppState.filter.kelasDipilih = 'SEMUA';
+            simpanPreferensi({ kelasDipilih: 'SEMUA' });
+          }
+        });
+    }, 'Naikkan ' + dipilih.length + ' Siswa');
+  cekKelasTujuan();
+}
+
+/**
+ * Peringatan bila kelas tujuan masih berisi siswa lain. Menaikkan 7A → 8A
+ * sebelum 8A dinaikkan ke 9A membuat dua angkatan tercampur di 8A, dan
+ * sesudah itu tidak ada cara membedakan mereka dari tampilan.
+ */
+function cekKelasTujuan() {
+  const el = document.getElementById('peringatanTujuan');
+  const inp = document.getElementById('fNaikTujuan');
+  if (!el || !inp) return;
+  const tujuan = inp.value.trim();
+  const isi = tujuan ? AppState.siswa.filter(function (s) {
+    return String(s.Kelas).trim() === tujuan && AppState.pilihSiswa.indexOf(String(s.ID)) === -1;
+  }).length : 0;
+  el.innerHTML = isi
+    ? '<div class="kotak-info peringatan mt-2 mb-0"><i class="bi bi-exclamation-triangle"></i><div>' +
+      'Kelas <b>' + escHtml(tujuan) + '</b> masih berisi <b>' + isi + ' siswa</b>. Bila mereka belum dinaikkan, ' +
+      'kedua angkatan akan tercampur. Kerjakan dari kelas tertinggi lebih dulu.</div></div>'
+    : (tujuan && AppState.kelas.indexOf(tujuan) === -1
+        ? '<div class="form-text">Kelas <b>' + escHtml(tujuan) + '</b> belum ada — akan dibuat baru.</div>' : '');
+}
+
+// ── Reset poin ─────────────────────────────────────────────────────────
+function bukaResetPoin() {
+  const dipilih = siswaTerpilih();
+  if (!dipilih.length) return;
+  const poinAwal = AppState.konfigurasi.poinAwal || 100;
+  bukaModalForm('Reset Poin',
+    '<p class="mb-3">Poin <b>' + dipilih.length + ' siswa</b> akan kembali ke <b>' + escHtml(poinAwal) + '</b>.' +
+      '<span class="d-block text-secondary-2" style="font-size:12.5px;margin-top:2px">' + ringkasNama(dipilih) + '</span></p>' +
+    '<div class="kotak-info mb-0"><i class="bi bi-info-circle"></i><div>' +
+      'Riwayat pelanggaran &amp; kebaikan tetap tersimpan dan tetap bisa dibaca, ' +
+      'tetapi tidak lagi dihitung ke poin siswa.</div></div>',
+    function (modal) {
+      jalankanMassal('resetPoinMassal',
+        { idSiswa: dipilih.map(function (s) { return String(s.ID); }) }, modal,
+        function (data) { terapkanHasilMassal(data, { reset: true }); });
+    }, 'Reset ' + dipilih.length + ' Siswa');
+}
+
+// ── Hapus sekaligus ────────────────────────────────────────────────────
+function bukaHapusSiswaMassal() {
+  const dipilih = siswaTerpilih();
+  if (!dipilih.length) return;
+  bukaModalForm('Hapus Siswa',
+    '<p class="mb-3"><b>' + dipilih.length + ' siswa</b> akan dihapus dari daftar.' +
+      '<span class="d-block text-secondary-2" style="font-size:12.5px;margin-top:2px">' + ringkasNama(dipilih) + '</span></p>' +
+    '<div class="kotak-info bahaya mb-3"><i class="bi bi-exclamation-octagon"></i><div>' +
+      'Tidak dapat dibatalkan dari aplikasi. Riwayat poin, tindak lanjut, dan pengaduan mereka ' +
+      'tetap tersimpan di spreadsheet.</div></div>' +
+    '<label class="form-label" for="fHapusKonfirmasi">Ketik <b class="mono">HAPUS</b> untuk melanjutkan</label>' +
+    '<input class="form-control mono" id="fHapusKonfirmasi" autocomplete="off" spellcheck="false">',
+    function (modal) {
+      const ketik = document.getElementById('fHapusKonfirmasi').value.trim().toUpperCase();
+      if (ketik !== 'HAPUS') return toast('Belum dikonfirmasi', 'Ketik HAPUS untuk melanjutkan.', 'peringatan');
+      jalankanMassal('hapusSiswaMassal',
+        { idSiswa: dipilih.map(function (s) { return String(s.ID); }) }, modal,
+        function (data) {
+          const set = {};
+          data.idSiswa.forEach(function (id) { set[String(id)] = true; });
+          AppState.siswa = AppState.siswa.filter(function (s) { return set[String(s.ID)] !== true; });
+          hitungUlangDaftarKelas();
+          if (AppState.kelas.indexOf(AppState.filter.kelasDipilih) === -1 && AppState.filter.kelasDipilih !== 'SEMUA') {
+            AppState.filter.kelasDipilih = 'SEMUA';
+            simpanPreferensi({ kelasDipilih: 'SEMUA' });
+          }
+        });
+    }, 'Hapus ' + dipilih.length + ' Siswa');
+  const btn = document.getElementById('tombolSimpanModal');
+  btn.classList.remove('btn-navy'); btn.classList.add('btn-bahaya');
+  btn.innerHTML = '<i class="bi bi-trash"></i> Hapus ' + dipilih.length + ' Siswa';
+}
+
+// ── Bersama ────────────────────────────────────────────────────────────
+/**
+ * Menjalankan satu aksi massal. Sengaja TIDAK optimistik seperti aksi lain:
+ * mengubah puluhan siswa sekaligus lalu membatalkannya bila server menolak
+ * akan terlihat membingungkan. Tombol dikunci selama menunggu supaya
+ * tidak terkirim dua kali.
+ */
+function jalankanMassal(aksi, payload, modal, onSukses) {
+  const btn = document.getElementById('tombolSimpanModal');
+  const asli = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-inline"></span> Memproses…';
+  btn.disabled = true;
+  tandaSinkron(true);
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      btn.innerHTML = asli; btn.disabled = false;
+      tandaSinkron(false);
+      if (!res || !res.success) return toast('Gagal', res ? res.message : 'Tidak ada jawaban server.', 'bahaya');
+      modal.hide();
+      onSukses(res.data);
+      AppState.pilihSiswa = [];
+      renderUlang();
+      toast('Berhasil', res.message, 'sukses');
+    })
+    .withFailureHandler(function (err) {
+      btn.innerHTML = asli; btn.disabled = false;
+      tandaSinkron(false);
+      toast('Error', err.message, 'bahaya');
+    })[aksi](AppState.token, payload);
+}
+
+/** Menerapkan hasil naik kelas / reset poin ke data di layar */
+function terapkanHasilMassal(data, ubah) {
+  const set = {}, nisnReset = {};
+  data.idSiswa.forEach(function (id) { set[String(id)] = true; });
+  AppState.siswa.forEach(function (s) {
+    if (set[String(s.ID)] !== true) return;
+    if (ubah.kelas !== undefined) s.Kelas = ubah.kelas;
+    if (ubah.reset) {
+      s.PoinSaatIni = data.poinAwal;
+      s.StatusZona = data.zonaAwal;
+      nisnReset[String(s.NISN)] = true;
+    }
+  });
+  if (ubah.reset) {
+    AppState.riwayat.forEach(function (r) {
+      if (nisnReset[String(r.NISN)] === true) r.Status = 'Arsip';
+    });
+  }
+  hitungUlangDaftarKelas();
+}
+
+/** Daftar kelas disusun ulang dari data siswa — kelas bisa bertambah atau habis */
+function hitungUlangDaftarKelas() {
+  const k = [];
+  AppState.siswa.forEach(function (s) {
+    const x = String(s.Kelas || '').trim();
+    if (x && k.indexOf(x) === -1) k.push(x);
+  });
+  AppState.kelas = k.sort();
 }
 
 function bukaDetailSiswa(nisn) {
@@ -2757,7 +3094,9 @@ function bukaEditRiwayat(id) {
       '<div class="form-text">Maksimal 5 MB. Foto otomatis diperkecil sebelum diunggah. ' +
       'Mengunggah foto baru akan menggantikan foto lama.</div></div>' +
     '<div class="kotak-info peringatan"><i class="bi bi-exclamation-triangle"></i><div>' +
-      'Mengubah nilai poin akan otomatis menyesuaikan akumulasi poin siswa.</div></div>',
+      (catatanArsip(r)
+        ? 'Catatan ini tercatat sebelum poin siswa direset. Mengubah nilainya hanya memperbaiki arsip — poin siswa tidak ikut berubah.'
+        : 'Mengubah nilai poin akan otomatis menyesuaikan akumulasi poin siswa.') + '</div></div>',
     function (modal) {
       const ubahan = {
         ID: id,
@@ -2806,13 +3145,17 @@ function bukaEditRiwayat(id) {
 function konfirmasiHapusRiwayat(id) {
   const r = AppState.riwayat.filter(function (x) { return String(x.ID) === String(id); })[0];
   if (!r) return;
+  // Catatan arsip = tercatat sebelum poin siswa direset; poinnya sudah diselesaikan
+  const arsip = catatanArsip(r);
   konfirmasi('Hapus Catatan Poin',
-    'Hapus catatan "' + r.NamaKejadian + '" milik ' + r.NamaSiswa + '? Poin sebesar ' + r.Poin + ' akan dikembalikan.',
+    'Hapus catatan "' + r.NamaKejadian + '" milik ' + r.NamaSiswa + '? ' + (arsip
+      ? 'Catatan ini tercatat sebelum poin siswa direset, jadi poin siswa tidak berubah.'
+      : 'Poin sebesar ' + r.Poin + ' akan dikembalikan.'),
     function () {
       // ── Optimistic: hapus dari tampilan seketika ──
       const salinan = Object.assign({}, r);
       AppState.riwayat = AppState.riwayat.filter(function (x) { return String(x.ID) !== String(id); });
-      const s = AppState.siswa.filter(function (x) { return String(x.NISN) === String(r.NISN); })[0];
+      const s = arsip ? null : AppState.siswa.filter(function (x) { return String(x.NISN) === String(r.NISN); })[0];
       if (s) { s.PoinSaatIni = Number(s.PoinSaatIni) - Number(r.Poin); s.StatusZona = zonaDari(s.PoinSaatIni); }
       renderUlang();
       tandaSinkron(true);
@@ -2826,7 +3169,9 @@ function konfirmasiHapusRiwayat(id) {
             renderUlang();
             return toast('Gagal', res.message, 'bahaya');
           }
-          if (s && res.data.poinBaru !== null) { s.PoinSaatIni = res.data.poinBaru; s.StatusZona = res.data.zonaBaru; }
+          if (s && res.data.poinBaru !== null && res.data.poinBaru !== undefined) {
+            s.PoinSaatIni = res.data.poinBaru; s.StatusZona = res.data.zonaBaru;
+          }
           renderUlang();
           toast('Berhasil', res.message, 'sukses');
         })
