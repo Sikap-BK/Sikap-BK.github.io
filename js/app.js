@@ -228,19 +228,22 @@ function tanganiLogin(ev) {
       // Simpan token di memori JavaScript — TIDAK PERNAH di URL
       AppState.token  = res.data.token;
       AppState.profil = res.data.profil;
-      terapkanBootstrap(res.data.bootstrap);
 
-      document.getElementById('layarLogin').style.display = 'none';
-      document.getElementById('layarAplikasi').style.display = 'block';
+      // v3.2 — Akun yang masih memakai kata sandi bawaan (admin123, guru123, …)
+      // sengaja TIDAK diberi data oleh server sampai kata sandinya diganti.
+      // Sebelum perbaikan ini, layar login mencoba membaca data yang kosong
+      // itu dan berhenti dengan "Cannot read properties of null".
+      if (res.data.profil && res.data.profil.sandiBawaan === true) {
+        tutupSambutan();
+        return mintaGantiSandiBawaan(password);
+      }
+      if (!res.data.bootstrap) {
+        tutupSambutan();
+        AppState.token = null; AppState.profil = null;
+        return tampilGalatLogin(res.message || 'Server tidak mengirim data. Coba lagi beberapa saat.');
+      }
 
-      siapkanAplikasi();
-      tutupSambutan();
-      toast('Selamat datang', res.message, 'sukses');
-
-      // Catat "berhasil masuk" SESUDAH layar terbuka (v2.18). Sebelumnya baris
-      // log ini ditulis di server sebelum data diambil, sehingga pengguna ikut
-      // menunggu operasi tulis yang tidak ada hubungannya dengan layarnya.
-      catatMasukDiamDiam();
+      bukaAplikasi(res.data.bootstrap, res.message);
     })
     .withFailureHandler(function (err) {
       btn.innerHTML = asli; btn.disabled = false;
@@ -248,6 +251,103 @@ function tanganiLogin(ev) {
       tampilGalatLogin('Gagal terhubung: ' + err.message);
     })
     .doLogin({ peran: peran, username: username, password: password });
+}
+
+/** Membuka layar aplikasi dengan paket data dari server */
+function bukaAplikasi(paket, pesan) {
+  terapkanBootstrap(paket);
+
+  document.getElementById('layarLogin').style.display = 'none';
+  document.getElementById('layarAplikasi').style.display = 'block';
+
+  siapkanAplikasi();
+  tutupSambutan();
+  toast('Selamat datang', pesan || 'Selamat datang di SIKAP BK.', 'sukses');
+
+  // Catat "berhasil masuk" SESUDAH layar terbuka (v2.18). Sebelumnya baris
+  // log ini ditulis di server sebelum data diambil, sehingga pengguna ikut
+  // menunggu operasi tulis yang tidak ada hubungannya dengan layarnya.
+  catatMasukDiamDiam();
+}
+
+/**
+ * Wajib ganti kata sandi bawaan sebelum aplikasi dibuka (v3.2).
+ *
+ * Kata sandi lama tidak ditanyakan lagi — baru saja diketik di layar login.
+ * Setelah berhasil, sesi yang sama langsung terbuka (server melepas tandanya),
+ * jadi pengguna tidak perlu login ulang.
+ */
+function mintaGantiSandiBawaan(sandiLama) {
+  const p = AppState.profil || {};
+  let berhasil = false;
+
+  const modal = bukaModalForm('Buat Kata Sandi Baru',
+    '<div class="kotak-info peringatan mb-3"><i class="bi bi-shield-lock"></i><div>' +
+      'Akun <b>' + escHtml(p.nama || '') + '</b> masih memakai <b>kata sandi bawaan</b>. ' +
+      'Kata sandi itu tertulis di panduan pemasangan, jadi harus diganti sebelum aplikasi dibuka.' +
+    '</div></div>' +
+    '<div class="mb-3">' +
+      '<label class="form-label" for="pwBaru">Kata Sandi Baru <span class="wajib">*</span></label>' +
+      '<div class="input-group">' +
+        '<input type="password" class="form-control" id="pwBaru" autocomplete="new-password" ' +
+          'oninput="nilaiKekuatanSandi()">' +
+        '<button class="btn btn-hantu" type="button" onclick="lihatSandi(\'pwBaru\',this)" ' +
+          'title="Tampilkan"><i class="bi bi-eye"></i></button>' +
+      '</div>' +
+      '<div id="kekuatanSandi" class="form-text">Minimal 6 karakter.</div>' +
+    '</div>' +
+    '<div class="mb-0">' +
+      '<label class="form-label" for="pwUlang">Ulangi Kata Sandi Baru <span class="wajib">*</span></label>' +
+      '<input type="password" class="form-control" id="pwUlang" autocomplete="new-password">' +
+    '</div>',
+    function (m) {
+      const baru  = document.getElementById('pwBaru').value;
+      const ulang = document.getElementById('pwUlang').value;
+      if (!baru || !ulang)       return toast('Belum lengkap', 'Isi kedua kolom kata sandi.', 'peringatan');
+      if (baru.length < 6)       return toast('Terlalu pendek', 'Kata sandi baru minimal 6 karakter.', 'peringatan');
+      if (baru === sandiLama)    return toast('Masih sama', 'Kata sandi baru harus berbeda dari kata sandi bawaan.', 'peringatan');
+      if (baru !== ulang)        return toast('Tidak cocok', 'Ulangi kata sandi baru dengan benar.', 'peringatan');
+
+      const btn = document.getElementById('tombolSimpanModal');
+      const asli = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner-inline"></span> Menyimpan…';
+      btn.disabled = true;
+      const gagal = function (pesan) {
+        btn.innerHTML = asli; btn.disabled = false;
+        toast('Gagal', pesan, 'bahaya');
+      };
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (!res.success) return gagal(res.message);
+          // Sandi sudah diganti — ambil data dengan sesi yang sama
+          google.script.run
+            .withSuccessHandler(function (r2) {
+              if (!r2.success || !r2.data) {
+                return gagal('Kata sandi sudah diganti, tetapi data belum terambil. Silakan masuk ulang dengan kata sandi baru.');
+              }
+              berhasil = true;
+              btn.innerHTML = asli; btn.disabled = false;
+              AppState.profil.sandiBawaan = false;
+              document.getElementById('formLogin').reset();
+              m.hide();
+              bukaAplikasi(r2.data, 'Kata sandi baru tersimpan. Selamat datang, ' + (p.nama || '') + '!');
+            })
+            .withFailureHandler(function (err) { gagal(err.message); })
+            .refreshData(AppState.token);
+        })
+        .withFailureHandler(function (err) { gagal(err.message); })
+        .ubahPasswordSendiri(AppState.token, sandiLama, baru);
+    }, 'Simpan & Masuk');
+
+  // Ditutup tanpa mengganti → kembali ke layar login bersih, sesi dilupakan
+  const el = document.getElementById('modalForm');
+  el.addEventListener('hidden.bs.modal', function () {
+    if (berhasil) return;
+    AppState.token = null; AppState.profil = null;
+    tampilGalatLogin('Kata sandi bawaan harus diganti sebelum aplikasi dapat dipakai. Tekan Masuk untuk mencoba lagi.');
+  }, { once: true });
+  return modal;
 }
 
 /**
@@ -373,8 +473,8 @@ function bukaUbahPassword() {
     '</div>' +
 
     '<div class="kotak-info peringatan"><i class="bi bi-shield-lock"></i><div>' +
-      'Password tersimpan sebagai teks biasa di database sekolah dan dapat dibaca Administrator. ' +
-      'Karena itu, <b>jangan memakai password yang sama dengan email atau rekening pribadi Anda</b>.' +
+      'Password disimpan dalam bentuk teracak — Administrator pun tidak dapat membacanya. ' +
+      'Meski begitu, <b>jangan memakai password yang sama dengan email atau rekening pribadi Anda</b>.' +
     '</div></div>',
 
     function (modal) {
