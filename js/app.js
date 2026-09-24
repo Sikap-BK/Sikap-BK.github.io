@@ -289,7 +289,7 @@ function mintaGantiSandiBawaan(sandiLama) {
     '<div class="mb-3">' +
       '<label class="form-label" for="pwBaru">Kata Sandi Baru <span class="wajib">*</span></label>' +
       '<div class="input-group">' +
-        '<input type="password" class="form-control" id="pwBaru" autocomplete="new-password" ' +
+        '<input ' + atributKolomSandi() + ' id="pwBaru" ' +
           'oninput="nilaiKekuatanSandi()">' +
         '<button class="btn btn-hantu" type="button" onclick="lihatSandi(\'pwBaru\',this)" ' +
           'title="Tampilkan"><i class="bi bi-eye"></i></button>' +
@@ -298,7 +298,7 @@ function mintaGantiSandiBawaan(sandiLama) {
     '</div>' +
     '<div class="mb-0">' +
       '<label class="form-label" for="pwUlang">Ulangi Kata Sandi Baru <span class="wajib">*</span></label>' +
-      '<input type="password" class="form-control" id="pwUlang" autocomplete="new-password">' +
+      '<input ' + atributKolomSandi() + ' id="pwUlang">' +
     '</div>',
     function (m) {
       const baru  = document.getElementById('pwBaru').value;
@@ -450,7 +450,7 @@ function bukaUbahPassword() {
     '<div class="mb-3">' +
       '<label class="form-label" for="pwLama">Password Saat Ini <span class="wajib">*</span></label>' +
       '<div class="input-group">' +
-        '<input type="password" class="form-control" id="pwLama" autocomplete="current-password">' +
+        '<input ' + atributKolomSandi() + ' id="pwLama">' +
         '<button class="btn btn-hantu" type="button" onclick="lihatSandi(\'pwLama\',this)" ' +
           'title="Tampilkan"><i class="bi bi-eye"></i></button>' +
       '</div>' +
@@ -459,7 +459,7 @@ function bukaUbahPassword() {
     '<div class="mb-3">' +
       '<label class="form-label" for="pwBaru">Password Baru <span class="wajib">*</span></label>' +
       '<div class="input-group">' +
-        '<input type="password" class="form-control" id="pwBaru" autocomplete="new-password" ' +
+        '<input ' + atributKolomSandi() + ' id="pwBaru" ' +
           'oninput="nilaiKekuatanSandi()">' +
         '<button class="btn btn-hantu" type="button" onclick="lihatSandi(\'pwBaru\',this)" ' +
           'title="Tampilkan"><i class="bi bi-eye"></i></button>' +
@@ -469,7 +469,7 @@ function bukaUbahPassword() {
 
     '<div class="mb-3">' +
       '<label class="form-label" for="pwUlang">Ulangi Password Baru <span class="wajib">*</span></label>' +
-      '<input type="password" class="form-control" id="pwUlang" autocomplete="new-password">' +
+      '<input ' + atributKolomSandi() + ' id="pwUlang">' +
     '</div>' +
 
     '<div class="kotak-info peringatan"><i class="bi bi-shield-lock"></i><div>' +
@@ -507,10 +507,53 @@ function bukaUbahPassword() {
     }, 'Simpan Password');
 }
 
+/**
+ * Atribut kolom kata sandi yang TIDAK memancing jendela "Google Password
+ * Manager created a strong password" (v3.2).
+ *
+ * Jendela itu muncul pada kolom <input type="password"> yang dianggap Chrome
+ * sebagai kata sandi BARU. Di aplikasi sekolah ia merugikan: komputer ruang
+ * guru biasanya masuk dengan akun Google sekolah, jadi kata sandi acak buatan
+ * Google tersimpan di akun SEKOLAH — gurunya sendiri tidak pernah tahu isinya.
+ * Pada form Data Guru lebih buruk lagi: Admin tidak tahu kata sandi yang harus
+ * diberitahukan kepada guru itu.
+ *
+ * Caranya: kolomnya bertipe teks biasa, tetapi hurufnya disamarkan (●●●) oleh
+ * CSS -webkit-text-security. Chrome tidak menganggapnya kolom kata sandi,
+ * sehingga tidak menawarkan apa-apa.
+ *
+ * Hanya di komputer (penunjuk mouse). Di HP tetap type="password": papan ketik
+ * HP memperlakukan kolom password secara khusus — tidak mengingat kata dan
+ * tidak menawarkan saran — dan perlindungan itu lebih penting daripada
+ * menghilangkan saran Google di sana.
+ */
+const SAMARKAN_DENGAN_CSS = (function () {
+  try {
+    return CSS.supports('-webkit-text-security', 'disc') &&
+           window.matchMedia('(pointer: fine)').matches;
+  } catch (e) { return false; }
+})();
+
+function atributKolomSandi() {
+  return (SAMARKAN_DENGAN_CSS
+      ? 'type="text" class="form-control sandi-samar" '
+      : 'type="password" class="form-control" ') +
+    'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-sandi="1"';
+}
+
 /** Tampilkan / sembunyikan isi kolom sandi */
 function lihatSandi(id, tombol) {
   const inp = document.getElementById(id);
   if (!inp) return;
+  // Kolom yang disamarkan CSS: cukup lepas/pasang samarannya
+  if (inp.classList.contains('sandi-samar') || inp.dataset.sandiTerbuka === '1') {
+    const buka = inp.classList.contains('sandi-samar');
+    inp.classList.toggle('sandi-samar', !buka);
+    inp.dataset.sandiTerbuka = buka ? '1' : '';
+    tombol.innerHTML = '<i class="bi bi-eye' + (buka ? '-slash' : '') + '"></i>';
+    tombol.title = buka ? 'Sembunyikan' : 'Tampilkan';
+    return;
+  }
   const tampil = inp.type === 'password';
   inp.type = tampil ? 'text' : 'password';
   tombol.innerHTML = '<i class="bi bi-eye' + (tampil ? '-slash' : '') + '"></i>';
@@ -2203,7 +2246,7 @@ function renderDataSiswa() {
     '</div>' +
   '</div></div>' +
 
-  '<div class="bungkus-tabel">' + tabelSiswa(data, bolehEdit, satuKelas) + '</div>' +
+  '<div class="bungkus-tabel wadah-siswa">' + tabelSiswa(data, bolehEdit, satuKelas) + '</div>' +
   (bolehEdit ? '<div id="bilahPilihSiswa">' + bilahPilihSiswa() + '</div>' : '');
 
   document.getElementById('section-dataSiswa').innerHTML = html;
@@ -2255,47 +2298,62 @@ function lencanaPembinaan(nisn) {
     '</div>';
 }
 
+/**
+ * Tabel Data Siswa (v3.2 — tanpa geser ke samping).
+ *
+ * Satu susunan HTML, dua wujud — diatur css/style.css menurut LEBAR WADAH-nya
+ * (container query), bukan lebar layar:
+ *   • wadah lebar  → tabel padat. NISN pindah ke bawah nama, satu kolom hilang.
+ *   • wadah sempit → setiap baris digambar sebagai kartu.
+ * Lebar wadah yang menentukan, karena di laptop 1024 px sidebar sudah memakan
+ * sepertiga layar — layarnya "lebar", tetapi ruang tabelnya sempit.
+ */
 function tabelSiswa(data, bolehEdit, satuKelas) {
   if (!data.length) {
     return '<div class="kosong"><i class="bi bi-search"></i><h6>Tidak ada siswa yang cocok</h6>' +
       '<p class="mb-0">Ubah kata kunci atau filter untuk menampilkan data.</p></div>';
   }
   const pilih = AppState.pilihSiswa;
-  return '<table class="tabel"><thead><tr>' +
+  const bina = bolehLihatTindakLanjut();
+  const labelZona = { Hijau: 'Aman', Kuning: 'Waspada', Merah: 'Kritis' };
+  return '<table class="tabel tabel-siswa' + (bolehEdit ? ' dgn-pilih' : '') + '"><thead><tr>' +
       (bolehEdit ? '<th class="kol-pilih"><label class="sel-pilih" title="Pilih semua yang tampil">' +
         '<input type="checkbox" class="form-check-input" id="centangSemuaSiswa" ' +
-        'aria-label="Pilih semua siswa yang tampil" onchange="pilihSemuaSiswa(this.checked)"></label></th>' : '') +
-      '<th style="width:48px">NO</th><th>NAMA SISWA</th><th>NISN</th>' +
-      (satuKelas ? '' : '<th>KELAS</th>') +
-      '<th class="text-center">POIN</th><th>STATUS ZONA</th>' +
-      (bolehLihatTindakLanjut() ? '<th>PEMBINAAN</th>' : '') +
-      '<th>KEJADIAN TERAKHIR</th><th style="width:96px">AKSI</th>' +
+        'aria-label="Pilih semua siswa yang tampil" onchange="pilihSemuaSiswa(this.checked)">' +
+        '<span class="teks-pilih-semua">Pilih semua (' + data.length + ')</span></label></th>' : '') +
+      '<th class="kol-no">NO</th><th class="kol-nama">NAMA SISWA</th>' +
+      (satuKelas ? '' : '<th class="kol-kelas">KELAS</th>') +
+      '<th class="kol-poin">POIN</th><th class="kol-zona">ZONA</th>' +
+      (bina ? '<th class="kol-bina">PEMBINAAN</th>' : '') +
+      '<th class="kol-kejadian">KEJADIAN TERAKHIR</th><th class="kol-aksi">AKSI</th>' +
     '</tr></thead><tbody>' +
     data.map(function (s, i) {
       const z = zonaDari(s.PoinSaatIni);
       const terakhir = AppState.riwayat.filter(function (r) { return String(r.NISN) === String(s.NISN); })[0];
       const dicentang = bolehEdit && pilih.indexOf(String(s.ID)) !== -1;
+      const jk = s.JenisKelamin === 'P' ? 'Perempuan' : (s.JenisKelamin === 'L' ? 'Laki-laki' : '');
       return '<tr class="' + (z === 'Merah' ? 'baris-merah' : '') + (dicentang ? ' dipilih' : '') +
           '" data-id="' + escHtml(s.ID) + '">' +
         (bolehEdit ? '<td class="kol-pilih"><label class="sel-pilih">' +
           '<input type="checkbox" class="form-check-input centang-siswa" data-id="' + escHtml(s.ID) + '"' +
           (dicentang ? ' checked' : '') + ' aria-label="Pilih ' + escHtml(s.Nama) + '" ' +
           'onchange="pilihSiswa(this.dataset.id, this.checked)"></label></td>' : '') +
-        '<td class="mono">' + String(i + 1).padStart(2, '0') + '</td>' +
-        '<td><div class="sel-nama"><div class="avatar-mini">' + inisial(s.Nama) + '</div>' +
-          '<div><div style="font-weight:600">' + escHtml(s.Nama) + '</div>' +
-          '<div class="sub">' + (s.JenisKelamin === 'P' ? 'Perempuan' : (s.JenisKelamin === 'L' ? 'Laki-laki' : '—')) + '</div></div></div></td>' +
-        '<td class="mono">' + escHtml(s.NISN) + '</td>' +
-        (satuKelas ? '' : '<td>' + escHtml(s.Kelas) + '</td>') +
-        '<td class="text-center mono" style="font-weight:700;font-size:15px">' + escHtml(s.PoinSaatIni) + '</td>' +
-        '<td><span class="lencana ' + kelasZona(z) + '">' + z + (z === 'Hijau' ? ' (Aman)' : (z === 'Kuning' ? ' (Waspada)' : ' (Kritis)')) + '</span></td>' +
-        (bolehLihatTindakLanjut() ? '<td>' + lencanaPembinaan(s.NISN) + '</td>' : '') +
-        '<td style="font-size:12.5px;color:var(--text-secondary)">' +
-          (terakhir ? escHtml(potong(terakhir.NamaKejadian, 28)) : 'Tidak ada pelanggaran') + '</td>' +
-        '<td><div class="aksi-baris">' +
-          '<button class="btn btn-hantu btn-mini" title="Lihat detail" onclick="bukaDetailSiswa(\'' + escHtml(s.NISN) + '\')"><i class="bi bi-eye"></i></button>' +
-          (bolehEdit ? '<button class="btn btn-hantu btn-mini" title="Edit" onclick="bukaFormSiswa(\'' + escHtml(s.ID) + '\')"><i class="bi bi-pencil"></i></button>' +
-                       '<button class="btn btn-hantu btn-mini" title="Hapus" onclick="hapusSiswa(\'' + escHtml(s.ID) + '\',\'' + escHtml(s.Nama) + '\')"><i class="bi bi-trash"></i></button>' : '') +
+        '<td class="kol-no mono">' + String(i + 1).padStart(2, '0') + '</td>' +
+        '<td class="kol-nama"><div class="sel-nama"><div class="avatar-mini">' + inisial(s.Nama) + '</div>' +
+          '<div class="teks-nama"><div class="nama">' + escHtml(s.Nama) + '</div>' +
+          '<div class="sub"><span class="mono">' + escHtml(s.NISN) + '</span>' + (jk ? ' • ' + jk : '') +
+          '</div></div></div></td>' +
+        (satuKelas ? '' : '<td class="kol-kelas"><span class="cap-kelas-siswa">' + escHtml(s.Kelas) + '</span></td>') +
+        '<td class="kol-poin mono">' + escHtml(s.PoinSaatIni) + '</td>' +
+        '<td class="kol-zona"><span class="lencana ' + kelasZona(z) + '" title="Zona ' + z + ' (' + labelZona[z] + ')">' +
+          z + '</span></td>' +
+        (bina ? '<td class="kol-bina">' + lencanaPembinaan(s.NISN) + '</td>' : '') +
+        '<td class="kol-kejadian" title="' + escHtml(terakhir ? terakhir.NamaKejadian : '') + '">' +
+          (terakhir ? escHtml(terakhir.NamaKejadian) : '<span class="kosong-halus">Tidak ada catatan</span>') + '</td>' +
+        '<td class="kol-aksi"><div class="aksi-baris">' +
+          '<button class="btn btn-hantu btn-mini" title="Lihat detail" aria-label="Lihat detail ' + escHtml(s.Nama) + '" onclick="bukaDetailSiswa(\'' + escHtml(s.NISN) + '\')"><i class="bi bi-eye"></i></button>' +
+          (bolehEdit ? '<button class="btn btn-hantu btn-mini" title="Edit" aria-label="Edit ' + escHtml(s.Nama) + '" onclick="bukaFormSiswa(\'' + escHtml(s.ID) + '\')"><i class="bi bi-pencil"></i></button>' +
+                       '<button class="btn btn-hantu btn-mini" title="Hapus" aria-label="Hapus ' + escHtml(s.Nama) + '" onclick="hapusSiswa(\'' + escHtml(s.ID) + '\',\'' + escHtml(s.Nama) + '\')"><i class="bi bi-trash"></i></button>' : '') +
         '</div></td>' +
       '</tr>';
     }).join('') + '</tbody></table>';
@@ -3388,7 +3446,7 @@ function bukaFormGuru(id) {
     '<div class="mb-3"><label class="form-label" for="fGuruPass">Password ' +
       (id ? '<span class="text-secondary-2">(kosongkan bila tidak diubah)</span>' : '<span class="wajib">*</span>') + '</label>' +
       '<div class="input-group">' +
-        '<input type="password" class="form-control" id="fGuruPass" autocomplete="new-password" placeholder="' +
+        '<input ' + atributKolomSandi() + ' id="fGuruPass" placeholder="' +
           (id ? 'Biarkan kosong untuk mempertahankan' : 'Minimal 6 karakter') + '">' +
         '<button class="btn btn-hantu" type="button" onclick="lihatSandi(\'fGuruPass\', this)" ' +
           'title="Tampilkan password"><i class="bi bi-eye"></i></button>' +
@@ -6494,7 +6552,7 @@ function renderPengaturan() {
           input2('Username Admin', 'setAdminUser', c.adminUsername) +
           '<div class="mb-3"><label class="form-label" for="setAdminPass">Password Admin Baru</label>' +
             '<div class="input-group">' +
-              '<input type="password" class="form-control" id="setAdminPass" autocomplete="new-password" ' +
+              '<input ' + atributKolomSandi() + ' id="setAdminPass" ' +
                 'placeholder="Kosongkan bila tidak diubah">' +
               '<button class="btn btn-hantu" type="button" onclick="lihatSandi(\'setAdminPass\', this)" ' +
                 'title="Tampilkan password"><i class="bi bi-eye"></i></button>' +
