@@ -86,22 +86,30 @@ const API_BACA = ['doLogin', 'getDaftarGuruLogin', 'refreshData'];
  * Kirim satu permintaan ke server.
  * @return {Promise<object>} jawaban { success, data, message }
  */
-async function apiKirim(aksi, args) {
-  // Sekolah tidak dikenal → berhenti di sini, jangan menembak alamat kosong.
-  // Tanpa ini, fetch('') menghasilkan galat jaringan yang tidak berarti
-  // apa-apa bagi guru, dan menutupi pesan sebenarnya yang sudah tampil.
-  if (!GAS_URL) {
-    throw new Error('Sekolah belum dikenali. Periksa alamat aplikasi Anda.');
-  }
+/**
+ * Aksi yang AMAN diulang otomatis bila sambungan terputus (v3.3).
+ *
+ * "Failed to fetch" berarti peramban tidak menerima jawaban yang boleh dibaca —
+ * biasanya gangguan sesaat di sisi Google, terutama pada pekerjaan berat
+ * seperti membuat PDF. Mengulang sekali hampir selalu berhasil.
+ *
+ * Yang diulang hanya aksi yang tidak berbahaya bila ternyata terjadi dua kali:
+ * membaca data, login, dan membuat dokumen (paling buruk: satu salinan PDF
+ * tambahan di folder Drive). Aksi yang MENYIMPAN, MENGUBAH, atau MENGHAPUS
+ * data sengaja TIDAK diulang — bisa saja permintaan pertama sebenarnya sudah
+ * sampai dan tersimpan, dan mengulangnya berarti catatan poin ganda.
+ */
+const API_ULANG_AMAN = ['doLogin', 'getDaftarGuruLogin', 'refreshData', 'cekPasang', 'getTemplateImport',
+                        'buatLaporanPDF', 'buatLaporanPendampinganPDF', 'buatSuratPDF'];
+const JEDA_ULANG_MS = 1500;
 
-  const namaArg = API_ARGUMEN[aksi];
-  if (!namaArg) throw new Error('Aksi tidak dikenal di sisi aplikasi: ' + aksi);
+/** Galat jaringan dari fetch() — bukan jawaban galat dari aplikasi */
+function galatJaringan(e) {
+  return e instanceof TypeError ||
+         /Failed to fetch|NetworkError|Load failed|network/i.test(String(e && e.message));
+}
 
-  // Argumen posisi dari pemanggil diubah menjadi bernama, sesuai urutan
-  // yang diharapkan server.
-  const muatan = { action: aksi };
-  namaArg.forEach(function (nama, i) { muatan[nama] = args[i]; });
-
+async function kirimSekali(aksi, muatan) {
   let res;
   if (API_BACA.indexOf(aksi) !== -1 && aksi !== 'doLogin') {
     const q = Object.keys(muatan)
@@ -118,16 +126,64 @@ async function apiKirim(aksi, args) {
     });
   }
 
-  if (!res.ok) throw new Error('Server menjawab ' + res.status);
+  if (!res.ok) {
+    const g = new Error('Server menjawab ' + res.status);
+    g.bolehUlang = res.status >= 500;          // 5xx = gangguan sesaat di Google
+    throw g;
+  }
 
   const teks = await res.text();
   try {
     return JSON.parse(teks);
   } catch (e) {
     // Jawaban bukan JSON biasanya berarti halaman galat Google — misalnya
-    // setelan akses salah, atau alamat /exec sudah tidak berlaku.
-    throw new Error('Jawaban server tidak terbaca. Periksa GAS_URL di js/config.js ' +
-                    'dan pastikan setelan aksesnya "Anyone".');
+    // setelan akses salah, alamat /exec sudah tidak berlaku, atau gangguan sesaat.
+    const g = new Error('Jawaban server tidak terbaca. Periksa GAS_URL di js/config.js ' +
+                        'dan pastikan setelan aksesnya "Anyone".');
+    g.bolehUlang = true;
+    throw g;
+  }
+}
+
+async function apiKirim(aksi, args) {
+  // Sekolah tidak dikenal → berhenti di sini, jangan menembak alamat kosong.
+  // Tanpa ini, fetch('') menghasilkan galat jaringan yang tidak berarti
+  // apa-apa bagi guru, dan menutupi pesan sebenarnya yang sudah tampil.
+  if (!GAS_URL) {
+    throw new Error('Sekolah belum dikenali. Periksa alamat aplikasi Anda.');
+  }
+
+  const namaArg = API_ARGUMEN[aksi];
+  if (!namaArg) throw new Error('Aksi tidak dikenal di sisi aplikasi: ' + aksi);
+
+  // Argumen posisi dari pemanggil diubah menjadi bernama, sesuai urutan
+  // yang diharapkan server.
+  const muatan = { action: aksi };
+  namaArg.forEach(function (nama, i) { muatan[nama] = args[i]; });
+
+  const amanDiulang = API_ULANG_AMAN.indexOf(aksi) !== -1;
+  try {
+    return await kirimSekali(aksi, muatan);
+  } catch (e) {
+    const sementara = galatJaringan(e) || e.bolehUlang === true;
+    if (amanDiulang && sementara) {
+      await new Promise(function (ok) { setTimeout(ok, JEDA_ULANG_MS); });
+      try {
+        return await kirimSekali(aksi, muatan);
+      } catch (e2) {
+        if (galatJaringan(e2)) {
+          throw new Error('Tidak dapat terhubung ke server, sudah dicoba dua kali. ' +
+                          'Periksa sambungan internet, lalu coba lagi sebentar lagi.');
+        }
+        throw e2;
+      }
+    }
+    if (galatJaringan(e)) {
+      // Aksi yang menyimpan data: permintaan mungkin SUDAH sampai sebelum terputus
+      throw new Error('Sambungan ke server terputus sebelum jawaban diterima. ' +
+                      'Periksa dulu apakah data sudah tersimpan (muat ulang halaman) sebelum mencoba lagi.');
+    }
+    throw e;
   }
 }
 
