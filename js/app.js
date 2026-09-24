@@ -1106,10 +1106,20 @@ function siswaUntukInputPoin() {
   return AppState.siswa;
 }
 
+/**
+ * Riwayat poin yang dibaca wali kelas mengikuti kelas siswa SEKARANG (v3.2),
+ * bukan kelas yang tercatat saat kejadian — sehingga sesudah naik kelas,
+ * wali kelas baru juga melihat riwayat siswanya. Kolom Kelas pada catatan
+ * tetap menunjukkan kelas saat kejadian itu terjadi.
+ */
 function riwayatDalamLingkup() {
   if (lingkupSatuKelas()) {
-    const kelas = String(AppState.profil.waliKelas);
-    return AppState.riwayat.filter(function (r) { return String(r.Kelas) === kelas; });
+    const kelas = String(AppState.profil.waliKelas).trim().toLowerCase();
+    const nisnKelas = {};
+    AppState.siswa.forEach(function (s) {
+      if (String(s.Kelas || '').trim().toLowerCase() === kelas) nisnKelas[String(s.NISN).trim()] = true;
+    });
+    return AppState.riwayat.filter(function (r) { return nisnKelas[String(r.NISN).trim()] === true; });
   }
   return AppState.riwayat;
 }
