@@ -48,6 +48,10 @@ const AppState = {
   peranLogin  : 'admin',
   grafik      : {},          // instance Chart.js aktif
   antrianSync : 0,           // jumlah operasi yang sedang disinkronkan
+  // v3.5 — simpan optimistik
+  sedangDisimpan  : {},      // ID rekaman yang perubahannya belum dijawab server
+  nomorUbah       : 0,       // bertambah tiap perubahan lokal; muat ulang yang kalah cepat dibuang
+  segarkanTertunda: false,   // muat ulang menunggu penyimpanan yang sedang berjalan
   filter      : { siswa: '', riwayat: '', kelasDipilih: 'SEMUA', zonaDipilih: 'SEMUA' },
   // Pengaturan halaman Cetak Laporan; bulan = array (kosong berarti seluruh bulan)
   laporan     : {
@@ -88,6 +92,12 @@ const SHEET = {
 
 document.addEventListener('DOMContentLoaded', function () {
   terapkanTemaTersimpan();
+
+  // Simpan optimistik (v3.5): layar sudah berubah, server belum tentu selesai.
+  // Menutup tab pada saat itu bisa memutus penyimpanan — beri peringatan.
+  window.addEventListener('beforeunload', function (ev) {
+    if (AppState.antrianSync > 0) { ev.preventDefault(); ev.returnValue = ''; return ''; }
+  });
 
   // Tutup daftar hasil pencarian siswa saat pengguna mengklik di luar blok pemilih.
   // Cakupannya SELURUH blok (kolom cari + filter kelas + tombol Semua/Tambahkan),
@@ -581,8 +591,17 @@ function nilaiKekuatanSandi() {
 }
 
 function tanganiLogout() {
-  konfirmasi('Keluar Aplikasi', 'Anda yakin ingin keluar dari SIKAP BK?', function () {
+  // v3.5 — Simpan optimistik: layar sudah berubah, tetapi server mungkin belum
+  // selesai. Keluar sekarang berarti token dicabut di tengah jalan dan
+  // simpanan itu bisa gagal tanpa ada yang tahu.
+  const masihSimpan = AppState.antrianSync > 0;
+  konfirmasi(masihSimpan ? 'Masih Menyimpan' : 'Keluar Aplikasi',
+    masihSimpan
+      ? 'Masih ada data yang sedang disimpan ke server (garis di puncak layar). Sebaiknya tunggu ' +
+        'beberapa detik. Bila keluar sekarang, penyimpanan itu bisa gagal tanpa sempat diberitahukan.'
+      : 'Anda yakin ingin keluar dari SIKAP BK?', function () {
     const token = AppState.token;
+    AppState.antrianSync = 0; tandaSinkron(false);        // jawaban sesi ini diabaikan sesudah keluar
     // Bersihkan state lokal lebih dulu (tidak menunggu server)
     AppState.token = null; AppState.profil = null;
     Object.keys(AppState.grafik).forEach(function (k) {
@@ -595,13 +614,17 @@ function tanganiLogout() {
     AppState.siswa = []; AppState.guru = []; AppState.riwayat = [];
     AppState.tindakLanjut = []; AppState.evaluasi = []; AppState.kelas = [];
     AppState.pelanggaran = []; AppState.kebaikan = [];
+    // Catatan pengaduan & konseling — yang paling peka — ikut dibersihkan (v3.5)
+    AppState.pengaduan = []; AppState.catatanPengaduan = [];
+    AppState.pilihSiswa = []; AppState.siswaTampil = []; AppState.detailNisn = null;
+    AppState.sedangDisimpan = {}; AppState.segarkanTertunda = false;
     lupakanPreferensi();
 
     document.getElementById('layarAplikasi').style.display = 'none';
     document.getElementById('layarLogin').style.display = 'flex';
     document.getElementById('formLogin').reset();
     google.script.run.doLogout(token); // fire & forget
-  }, 'Ya, Keluar');
+  }, masihSimpan ? 'Tetap Keluar' : 'Ya, Keluar');
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -858,6 +881,7 @@ function kompresGambar(file, maksSisi, callback) {
     r0.onload = function () {
       callback({ base64: r0.result.split(',')[1], mime: file.type, nama: file.name, dataUrl: r0.result });
     };
+    r0.onerror = function () { callback(null); };
     r0.readAsDataURL(file);
     return;
   }
@@ -889,6 +913,7 @@ function kompresGambar(file, maksSisi, callback) {
     img.onerror = function () { callback(null); };
     img.src = r.result;
   };
+  r.onerror = function () { callback(null); };
   r.readAsDataURL(file);
 }
 
@@ -915,12 +940,36 @@ function kelasZona(z) { return z === 'Hijau' ? 'hijau' : (z === 'Kuning' ? 'kuni
 
 function toast(judul, pesan, tipe) {
   const el = document.getElementById('toastApp');
+  // v3.5 — Pesan GAGAL yang masih tampil tidak boleh tertimpa pesan berikutnya.
+  // Dengan simpan optimistik, kabar gagal bisa datang tepat saat pengguna
+  // sudah mengerjakan hal lain; tanpa ini "Tersimpan" berikutnya menghapusnya.
+  if (el.classList.contains('show') && el.classList.contains('bahaya')) salinToastGagal(el);
   document.getElementById('judulToast').textContent = judul;
   document.getElementById('isiToast').textContent = pesan;
   el.className = 'toast ' + (tipe || '');
   const ikon = { sukses: 'bi-check-circle-fill', bahaya: 'bi-exclamation-octagon-fill', peringatan: 'bi-exclamation-triangle-fill' }[tipe] || 'bi-info-circle-fill';
   document.getElementById('ikonToast').className = 'bi ' + ikon + ' me-2';
-  new bootstrap.Toast(el, { delay: 4200 }).show();
+  // Satu instans dipakai ulang: show() menghentikan pewaktu pesan sebelumnya.
+  // Dulu tiap pesan membuat instans baru, dan pewaktu instans lama tetap
+  // berjalan — kabar gagal bisa ikut hilang 1 detik sesudah muncul (v3.5).
+  const lamaTampil = tipe === 'bahaya' ? 7000 : 4200;
+  const T = bootstrap.Toast;
+  const t = typeof T.getOrCreateInstance === 'function' ? T.getOrCreateInstance(el, { delay: lamaTampil }) : new T(el, { delay: lamaTampil });
+  if (t._config) t._config.delay = lamaTampil;
+  t.show();
+}
+
+/** Pindahkan pesan gagal yang sedang tampil ke kotak tersendiri, lalu biarkan ia hilang sendiri */
+function salinToastGagal(el) {
+  try {
+    const c = el.cloneNode(true);
+    c.removeAttribute('id');
+    c.querySelectorAll('[id]').forEach(function (x) { x.removeAttribute('id'); });
+    c.classList.remove('show', 'showing');
+    el.parentNode.insertBefore(c, el);
+    c.addEventListener('hidden.bs.toast', function () { c.remove(); });
+    new bootstrap.Toast(c, { delay: 7000 }).show();
+  } catch (e) { /* tidak fatal — paling buruk pesannya tertimpa seperti dulu */ }
 }
 
 function konfirmasi(judul, pesan, aksi, labelTombol) {
@@ -928,9 +977,24 @@ function konfirmasi(judul, pesan, aksi, labelTombol) {
   document.getElementById('pesanKonfirmasi').textContent = pesan;
   const btn = document.getElementById('tombolKonfirmasi');
   btn.textContent = labelTombol || 'Ya, Lanjutkan';
-  const modal = new bootstrap.Modal(document.getElementById('modalKonfirmasi'));
-  btn.onclick = function () { modal.hide(); aksi(); };
-  modal.show();
+  const M = bootstrap.Modal, elK = document.getElementById('modalKonfirmasi');
+  const modal = typeof M.getOrCreateInstance === 'function' ? M.getOrCreateInstance(elK) : new M(elK);
+  // Sekali tekan saja: klik kedua selama jendela memudar tidak menjalankan aksinya lagi.
+  // Klik selagi jendela masih bergerak (muncul/menutup) diabaikan — Bootstrap
+  // menolak menutup jendela yang sedang bergerak, dan aksinya tidak boleh jalan
+  // sementara jendelanya tetap terbuka.
+  btn.onclick = function () {
+    if (modal._isTransitioning === true) return;
+    btn.onclick = null; modal.hide(); aksi();
+  };
+  const el = document.getElementById('modalKonfirmasi');
+  // Jendela yang sama masih memudar dari konfirmasi sebelumnya: Bootstrap
+  // mengabaikan show() — tampilkan begitu ia selesai menutup.
+  if (modal._isTransitioning === true && !el.classList.contains('show')) {
+    el.addEventListener('hidden.bs.modal', function () { modal.show(); }, { once: true });
+  } else {
+    modal.show();
+  }
 }
 
 /** Modal form serbaguna */
@@ -941,8 +1005,22 @@ function bukaModalForm(judul, isiHtml, onSimpan, labelSimpan) {
   btn.innerHTML = '<i class="bi bi-save"></i> ' + (labelSimpan || 'Simpan');
   btn.disabled = false;
   btn.classList.remove('btn-bahaya'); btn.classList.add('btn-navy');   // modal hapus menggantinya merah
-  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('modalForm'));
-  btn.onclick = function () { onSimpan(modal); };
+  const elModal = document.getElementById('modalForm');
+  const modal = bootstrap.Modal.getOrCreateInstance(elModal);
+  // v3.5 — Begitu jendela mulai ditutup, tombolnya dikunci. Simpan optimistik
+  // menutup jendela seketika; tanpa kunci ini, klik kedua selama jendela memudar
+  // (±0,3 detik) menyimpan data yang sama dua kali.
+  if (!elModal.dataset.kunciTutup) {
+    elModal.dataset.kunciTutup = '1';
+    elModal.addEventListener('hide.bs.modal', function () {
+      const b = document.getElementById('tombolSimpanModal');
+      if (b) b.disabled = true;
+    });
+  }
+  btn.onclick = function () {
+    if (btn.disabled || modal._isTransitioning === true) return;   // jendela masih bergerak — lihat konfirmasi()
+    onSimpan(modal);
+  };
   modal.show();
   return modal;
 }
@@ -1018,6 +1096,11 @@ function tandaSinkron(mulai) {
   AppState.antrianSync += mulai ? 1 : -1;
   if (AppState.antrianSync < 0) AppState.antrianSync = 0;
   const sibuk = AppState.antrianSync > 0;
+  // Muat ulang yang diminta selagi ada penyimpanan berjalan — jalankan sekarang
+  if (!sibuk && AppState.segarkanTertunda && AppState.token) {
+    AppState.segarkanTertunda = false;
+    setTimeout(function () { segarkanData(true); }, 0);
+  }
 
   // Bilah tipis di puncak layar — satu-satunya umpan balik yang terlihat di HP
   const bilah = document.getElementById('bilahSinkron');
@@ -1060,21 +1143,46 @@ function tombolSibuk(el, label) {
   };
 }
 
-/** Ambil data terbaru dari server (tombol refresh) */
-function segarkanData() {
+/**
+ * Ambil data terbaru dari server (tombol refresh).
+ *
+ * v3.5 — Selama masih ada penyimpanan yang berjalan, muat ulang DITUNDA sampai
+ * semuanya selesai. Kalau tidak, data dari server (yang dibaca sebelum simpanan
+ * itu masuk) menimpa layar dan catatan yang baru dibuat seolah-olah hilang.
+ * @param {boolean} diam  dipanggil otomatis (bukan dari tombol) — tanpa pesan "Sebentar"
+ */
+function segarkanData(diam) {
+  if (!AppState.token) return;
+  if (AppState.antrianSync > 0) {
+    AppState.segarkanTertunda = true;
+    if (diam !== true) toast('Sebentar', 'Data dimuat ulang begitu penyimpanan yang sedang berjalan selesai.', 'peringatan');
+    return;
+  }
   const ikon = document.getElementById('ikonSegarkan');
-  ikon.className = 'bi bi-arrow-clockwise';
-  ikon.style.animation = 'putar .7s linear infinite';
+  if (ikon) { ikon.className = 'bi bi-arrow-clockwise'; ikon.style.animation = 'putar .7s linear infinite'; }
+  const nomorAwal = AppState.nomorUbah;
+  const tokenKirim = AppState.token;
   tandaSinkron(true);
 
   google.script.run
     .withSuccessHandler(function (res) {
-      ikon.style.animation = ''; tandaSinkron(false);
-      if (res.success) { terapkanBootstrap(res.data); renderUlang(); toast('Berhasil', res.message, 'sukses'); }
+      if (AppState.token !== tokenKirim) return;
+      // Ada perubahan baru selagi memuat → data ini sudah basi; ulangi sesudah semuanya tersimpan
+      const basi = AppState.nomorUbah !== nomorAwal;
+      if (basi) AppState.segarkanTertunda = true;
+      if (ikon) ikon.style.animation = '';
+      tandaSinkron(false);
+      if (basi) return;
+      if (res.success) {
+        terapkanBootstrap(res.data); renderUlang();
+        if (diam !== true) toast('Berhasil', res.message, 'sukses');   // muat ulang otomatis: tanpa pesan
+      }
       else toast('Gagal', res.message, 'bahaya');
     })
     .withFailureHandler(function (err) {
-      ikon.style.animation = ''; tandaSinkron(false);
+      if (AppState.token !== tokenKirim) return;
+      if (ikon) ikon.style.animation = '';
+      tandaSinkron(false);
       toast('Error', err.message, 'bahaya');
     })
     .refreshData(AppState.token);
@@ -2033,6 +2141,8 @@ function simpanCatatanPoin(ev) {
   }
   if (!idJenis) { toast('Belum lengkap', 'Pilih jenis catatan, atau pilih "Lainnya — ketik manual".', 'peringatan'); return; }
   if (!tanggal) { toast('Belum lengkap', 'Tentukan tanggal kejadian.', 'peringatan'); return; }
+  // Jenis poin yang baru saja ditambahkan dan belum dijawab server belum punya ID resmi
+  if (!manual && masihSementara(idJenis)) return tungguSimpan();
 
   // ── Tentukan nama kejadian & kategori (dari master atau ketikan manual) ──
   let namaKejadian = '', kategori = '', simpanKeMaster = false;
@@ -2060,6 +2170,9 @@ function simpanCatatanPoin(ev) {
     .map(function (n) { return AppState.siswa.filter(function (x) { return String(x.NISN) === n; })[0]; })
     .filter(Boolean);
   if (!daftarSiswa.length) { toast('Data tidak valid', 'Siswa tidak ditemukan.', 'bahaya'); return; }
+  // Siswa yang baru ditambahkan dan belum tercatat di server. (Siswa yang datanya
+  // sedang disimpan tetap boleh dicatat poinnya — poin dikirim sebagai selisih.)
+  if (daftarSiswa.some(function (x) { return idSementara_(x.ID); })) return tungguSimpan();
 
   const delta = (isPelanggaran ? -1 : 1) * besaran;
   const tglTampil = formatTanggalDariInput(tanggal);
@@ -2132,11 +2245,15 @@ function simpanCatatanPoin(ev) {
   renderMenu();
 
   // ── 2. Satu panggilan server untuk seluruh siswa sekaligus ──
+  const tokenKirim = AppState.token;
+  AppState.nomorUbah++;
   tandaSinkron(true);
   google.script.run
     .withSuccessHandler(function (res) {
+      if (AppState.token !== tokenKirim) return;        // sesi sudah berganti — abaikan
       tandaSinkron(false);
       if (!res.success) { batalkan(); return toast('Gagal disimpan', res.message, 'bahaya'); }
+      if (res.terlaluBesar || !res.data) return segarkanData(true);
 
       // Ganti data sementara dengan data resmi dari server
       (res.data.tersimpan || []).forEach(function (resmi, i) {
@@ -2162,8 +2279,13 @@ function simpanCatatanPoin(ev) {
       if (AppState.halamanAktif !== 'inputPoin') renderUlang();
     })
     .withFailureHandler(function (err) {
+      if (AppState.token !== tokenKirim) return;
       tandaSinkron(false);
+      // Belum pasti (sambungan putus terus sampai percobaan ulang habis): yang
+      // tampil ditarik, lalu data dimuat ulang — bila ternyata sudah tersimpan,
+      // catatannya kembali muncul dari server.
       batalkan();
+      if (err && err.takPasti) return kabarBelumPasti(false);
       toast('Koneksi gagal', 'Catatan dibatalkan: ' + err.message, 'bahaya');
     })
     .simpanPoinBatch(AppState.token, payload);
@@ -2210,7 +2332,9 @@ function renderDataSiswa() {
   // Centang hanya berlaku untuk siswa yang SEDANG TAMPIL. Pindah filter kelas
   // otomatis membuang centang yang tersembunyi — supaya tidak ada siswa yang
   // ikut dinaikkan/dihapus tanpa terlihat di layar.
-  AppState.siswaTampil = bolehEdit ? data.map(function (s) { return String(s.ID); }) : [];
+  // Siswa yang baru ditambahkan dan belum dijawab server tidak ikut dicentang (v3.5)
+  AppState.siswaTampil = bolehEdit
+    ? data.filter(function (s) { return !masihSementara(s.ID); }).map(function (s) { return String(s.ID); }) : [];
   AppState.pilihSiswa = AppState.pilihSiswa.filter(function (id) {
     return AppState.siswaTampil.indexOf(id) !== -1;
   });
@@ -2346,7 +2470,8 @@ function tabelSiswa(data, bolehEdit, satuKelas) {
           '" data-id="' + escHtml(s.ID) + '">' +
         (bolehEdit ? '<td class="kol-pilih"><label class="sel-pilih">' +
           '<input type="checkbox" class="form-check-input centang-siswa" data-id="' + escHtml(s.ID) + '"' +
-          (dicentang ? ' checked' : '') + ' aria-label="Pilih ' + escHtml(s.Nama) + '" ' +
+          (dicentang ? ' checked' : '') + (masihSementara(s.ID) ? ' disabled title="Masih disimpan"' : '') +
+          ' aria-label="Pilih ' + escHtml(s.Nama) + '" ' +
           'onchange="pilihSiswa(this.dataset.id, this.checked)"></label></td>' : '') +
         '<td class="kol-no mono">' + String(i + 1).padStart(2, '0') + '</td>' +
         '<td class="kol-nama"><div class="sel-nama"><div class="avatar-mini">' + inisial(s.Nama) + '</div>' +
@@ -2390,8 +2515,14 @@ function resetFilterSiswa() {
   renderDataSiswa();
 }
 
-function bukaFormSiswa(id) {
-  const s = id ? AppState.siswa.filter(function (x) { return String(x.ID) === String(id); })[0] : {};
+function bukaFormSiswa(id, draf) {
+  if (masihSementara(id)) return tungguSimpan();
+  const s = draf || (id ? AppState.siswa.filter(function (x) { return String(x.ID) === String(id); })[0] : {});
+  const asli = id ? (AppState.siswa.filter(function (x) { return String(x.ID) === String(id); })[0] || {}) : {};
+  const poinAwalForm = asli.PoinSaatIni !== undefined ? asli.PoinSaatIni : AppState.konfigurasi.poinAwal;
+  // Draf yang dibuka lagi tidak membawa poin bila poinnya memang tidak diubah —
+  // tampilkan poin siswa yang sebenarnya, bukan poin awal sekolah.
+  const poinTampil = (s.PoinSaatIni !== undefined && s.PoinSaatIni !== '') ? s.PoinSaatIni : poinAwalForm;
   const opsiKelas = AppState.kelas.map(function (k) {
     return '<option value="' + escHtml(k) + '"' + (s.Kelas === k ? ' selected' : '') + '>' + escHtml(k) + '</option>';
   }).join('');
@@ -2417,7 +2548,7 @@ function bukaFormSiswa(id) {
         '<datalist id="daftarKelas">' + opsiKelas + '</datalist></div>' +
       '<div class="col-6"><label class="form-label">Poin Saat Ini</label>' +
         '<input type="number" class="form-control mono" id="fSiswaPoin" value="' +
-        escHtml(s.PoinSaatIni !== undefined ? s.PoinSaatIni : AppState.konfigurasi.poinAwal) + '"></div>' +
+        escHtml(poinTampil) + '"></div>' +
     '</div>' +
     '<div class="kotak-info"><i class="bi bi-info-circle"></i><div>Tanggal lahir wajib berformat ' +
       '<b class="mono">dd-mm-yyyy</b> dan juga berfungsi sebagai <b>password login siswa</b>.</div></div>',
@@ -2428,9 +2559,13 @@ function bukaFormSiswa(id) {
         NISN: document.getElementById('fSiswaNisn').value.trim(),
         TanggalLahir: document.getElementById('fSiswaTgl').value.trim(),
         JenisKelamin: document.getElementById('fSiswaJk').value,
-        Kelas: document.getElementById('fSiswaKelas').value.trim(),
-        PoinSaatIni: Number(document.getElementById('fSiswaPoin').value)
+        Kelas: document.getElementById('fSiswaKelas').value.trim()
       };
+      // Poin dikirim hanya bila memang diubah di formulir (atau siswa baru).
+      // Angka di formulir bisa saja angka SEMENTARA dari catatan poin yang belum
+      // dijawab server — mengirimnya ulang akan menimpa poin yang benar (v3.5).
+      const poinKetik = document.getElementById('fSiswaPoin').value;
+      if (!id || String(poinKetik) !== String(poinAwalForm)) rec.PoinSaatIni = Number(poinKetik);
       if (!rec.Nama || !rec.NISN || !rec.Kelas || !rec.TanggalLahir) {
         return toast('Belum lengkap', 'Nama, NISN, tanggal lahir, dan kelas wajib diisi.', 'peringatan');
       }
@@ -2479,6 +2614,7 @@ function kelasDariDaftar(daftar) {
 
 function pilihSiswa(id, centang) {
   id = String(id);
+  if (centang && masihSementara(id)) { perbaruiTampilanPilih(); return tungguSimpan(); }
   const i = AppState.pilihSiswa.indexOf(id);
   if (centang && i === -1) AppState.pilihSiswa.push(id);
   if (!centang && i !== -1) AppState.pilihSiswa.splice(i, 1);
@@ -2683,6 +2819,7 @@ function bukaHapusSiswaMassal() {
         function (data) {
           const set = {};
           data.idSiswa.forEach(function (id) { set[String(id)] = true; });
+          AppState.nomorUbah++;
           AppState.siswa = AppState.siswa.filter(function (s) { return set[String(s.ID)] !== true; });
           hitungUlangDaftarKelas();
           if (AppState.kelas.indexOf(AppState.filter.kelasDipilih) === -1 && AppState.filter.kelasDipilih !== 'SEMUA') {
@@ -2716,6 +2853,8 @@ function jalankanMassal(aksi, payload, modal, onSukses) {
       tandaSinkron(false);
       if (!res || !res.success) return toast('Gagal', res ? res.message : 'Tidak ada jawaban server.', 'bahaya');
       modal.hide();
+      // Jawaban ulangan yang terlalu besar untuk disimpan server: muat ulang saja
+      if (res.terlaluBesar || !res.data) { AppState.pilihSiswa = []; segarkanData(true); return toast('Berhasil', res.message, 'sukses'); }
       onSukses(res.data);
       AppState.pilihSiswa = [];
       renderUlang();
@@ -2730,6 +2869,7 @@ function jalankanMassal(aksi, payload, modal, onSukses) {
 
 /** Menerapkan hasil naik kelas / reset poin ke data di layar */
 function terapkanHasilMassal(data, ubah) {
+  AppState.nomorUbah++;               // muat ulang yang sedang berjalan sudah basi
   const set = {}, nisnReset = {};
   data.idSiswa.forEach(function (id) { set[String(id)] = true; });
   AppState.siswa.forEach(function (s) {
@@ -3237,6 +3377,7 @@ function batalFotoEditRiwayat() {
 }
 
 function bukaEditRiwayat(id) {
+  if (masihSementara(id)) return tungguSimpan();
   const r = AppState.riwayat.filter(function (x) { return String(x.ID) === String(id); })[0];
   if (!r) return;
   AppState.fotoRiwayat = { asal: String(r.LinkFoto || ''), baru: null, hapus: false };
@@ -3285,32 +3426,41 @@ function bukaEditRiwayat(id) {
         payload.hapusFoto = true;
       }
       modal.hide();
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          const idx = AppState.riwayat.findIndex(function (x) { return String(x.ID) === String(id); });
-          if (idx !== -1) {
-            Object.assign(AppState.riwayat[idx], ubahan);
-            if (res.data.linkFoto !== undefined && res.data.linkFoto !== null) {
-              AppState.riwayat[idx].LinkFoto = res.data.linkFoto;
-            }
+      simpanOptimistik({
+        pesan: 'Catatan "' + (ubahan.NamaKejadian || r.NamaKejadian) + '" diperbarui.',
+        terapkan: function () {
+          const rw = cariID(AppState.riwayat, id);
+          if (!rw) return null;
+          // Poin siswa ikut bergeser — kecuali catatan arsip (sudah diselesaikan reset)
+          const selisih = catatanArsip(rw) ? 0 : (Number(ubahan.Poin) || 0) - (Number(rw.Poin) || 0);
+          const s = AppState.siswa.filter(function (x) { return String(x.NISN) === String(rw.NISN); })[0];
+          const batalKolom = ubahKolom(rw, ubahan);
+          // Poin siswa digeser RELATIF, jadi pembatalannya tidak menimpa catatan lain yang masuk sementara itu
+          if (s && selisih) { s.PoinSaatIni = Number(s.PoinSaatIni) + selisih; s.StatusZona = zonaDari(s.PoinSaatIni); }
+          return function () {
+            const skr = cariID(AppState.riwayat, id);
+            if (skr) batalKolom(skr);
+            if (s && selisih) { s.PoinSaatIni = Number(s.PoinSaatIni) - selisih; s.StatusZona = zonaDari(s.PoinSaatIni); }
+          };
+        },
+        kunci: [id],
+        kirim: function (run) { run.editRiwayat(AppState.token, payload); },
+        sukses: function (res) {
+          const rw = cariID(AppState.riwayat, id);
+          const d = res.data || {};
+          if (rw && d.linkFoto !== undefined && d.linkFoto !== null) rw.LinkFoto = d.linkFoto;
+          if (rw && d.poinBaru !== null && d.poinBaru !== undefined) {
+            const s = AppState.siswa.filter(function (x) { return String(x.NISN) === String(rw.NISN); })[0];
+            if (s) { s.PoinSaatIni = d.poinBaru; s.StatusZona = d.zonaBaru; }
           }
-          if (res.data.poinBaru !== null && res.data.poinBaru !== undefined) {
-            const s = AppState.siswa.filter(function (x) { return String(x.NISN) === String(AppState.riwayat[idx].NISN); })[0];
-            if (s) { s.PoinSaatIni = res.data.poinBaru; s.StatusZona = res.data.zonaBaru; }
-          }
-          renderUlang();
-          toast('Berhasil', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .editRiwayat(AppState.token, payload);
+        }
+      });
     });
   renderFotoEditRiwayat();
 }
 
 function konfirmasiHapusRiwayat(id) {
+  if (masihSementara(id)) return tungguSimpan();
   const r = AppState.riwayat.filter(function (x) { return String(x.ID) === String(id); })[0];
   if (!r) return;
   // Catatan arsip = tercatat sebelum poin siswa direset; poinnya sudah diselesaikan
@@ -3321,36 +3471,31 @@ function konfirmasiHapusRiwayat(id) {
       : 'Poin sebesar ' + r.Poin + ' akan dikembalikan.'),
     function () {
       // ── Optimistic: hapus dari tampilan seketika ──
-      const salinan = Object.assign({}, r);
-      AppState.riwayat = AppState.riwayat.filter(function (x) { return String(x.ID) !== String(id); });
-      const s = arsip ? null : AppState.siswa.filter(function (x) { return String(x.NISN) === String(r.NISN); })[0];
-      if (s) { s.PoinSaatIni = Number(s.PoinSaatIni) - Number(r.Poin); s.StatusZona = zonaDari(s.PoinSaatIni); }
-      renderUlang();
-      tandaSinkron(true);
-
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) {
-            AppState.riwayat.unshift(salinan);
-            if (s) { s.PoinSaatIni = Number(s.PoinSaatIni) + Number(r.Poin); s.StatusZona = zonaDari(s.PoinSaatIni); }
-            renderUlang();
-            return toast('Gagal', res.message, 'bahaya');
+      simpanOptimistik({
+        judul: 'Terhapus', pesan: 'Catatan "' + r.NamaKejadian + '" dihapus.',
+        terapkan: function () {
+          const idx = posisiID(AppState.riwayat, id);
+          if (idx === -1) return null;
+          const salinan = AppState.riwayat[idx];
+          AppState.riwayat.splice(idx, 1);
+          const s = arsip ? null : AppState.siswa.filter(function (x) { return String(x.NISN) === String(r.NISN); })[0];
+          const poin = Number(salinan.Poin) || 0;
+          if (s) { s.PoinSaatIni = Number(s.PoinSaatIni) - poin; s.StatusZona = zonaDari(s.PoinSaatIni); }
+          return function () {
+            kembalikanRekaman('riwayat', [salinan], idx);
+            if (s) { s.PoinSaatIni = Number(s.PoinSaatIni) + poin; s.StatusZona = zonaDari(s.PoinSaatIni); }
+          };
+        },
+        kunci: [id],
+        kirim: function (run) { run.hapusRiwayat(AppState.token, id); },
+        sukses: function (res) {
+          const d = res.data || {};
+          const s = AppState.siswa.filter(function (x) { return String(x.NISN) === String(r.NISN); })[0];
+          if (!arsip && s && d.poinBaru !== null && d.poinBaru !== undefined) {
+            s.PoinSaatIni = d.poinBaru; s.StatusZona = d.zonaBaru;
           }
-          if (s && res.data.poinBaru !== null && res.data.poinBaru !== undefined) {
-            s.PoinSaatIni = res.data.poinBaru; s.StatusZona = res.data.zonaBaru;
-          }
-          renderUlang();
-          toast('Berhasil', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) {
-          tandaSinkron(false);
-          AppState.riwayat.unshift(salinan);
-          if (s) { s.PoinSaatIni = Number(s.PoinSaatIni) + Number(r.Poin); s.StatusZona = zonaDari(s.PoinSaatIni); }
-          renderUlang();
-          toast('Error', err.message, 'bahaya');
-        })
-        .hapusRiwayat(AppState.token, id);
+        }
+      });
     }, 'Ya, Hapus');
 }
 
@@ -3422,8 +3567,9 @@ function renderDataGuru() {
   document.getElementById('section-dataGuru').innerHTML = html;
 }
 
-function bukaFormGuru(id) {
-  const g = id ? AppState.guru.filter(function (x) { return String(x.ID) === String(id); })[0] : {};
+function bukaFormGuru(id, draf) {
+  if (masihSementara(id)) return tungguSimpan();
+  const g = draf || (id ? AppState.guru.filter(function (x) { return String(x.ID) === String(id); })[0] : {});
   const opsiKelas = '<option value="">— Bukan wali kelas —</option>' + AppState.kelas.map(function (k) {
     return '<option value="' + escHtml(k) + '"' + (g.WaliKelas === k ? ' selected' : '') + '>Kelas ' + escHtml(k) + '</option>';
   }).join('');
@@ -3489,6 +3635,8 @@ function bukaFormGuru(id) {
       simpanMasterData(SHEET.GURU, rec, modal);
     });
 
+  // Dibuka lagi setelah gagal disimpan: kata sandi yang tadi diketik dikembalikan
+  if (draf && draf.Password) { const k = document.getElementById('fGuruPass'); if (k) k.value = draf.Password; }
   perbaruiContohNomor();
 }
 
@@ -3510,26 +3658,38 @@ function hapusGuru(id, nama) {
 }
 
 function jadikanKepsek(id, nama) {
+  if (masihSementara(id)) return tungguSimpan();
   konfirmasi('Aktifkan Kepala Sekolah',
     'Jadikan "' + nama + '" sebagai Kepala Sekolah? Status guru lain akan dinonaktifkan.',
     function () {
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          AppState.guru.forEach(function (g) { g.KepalaSekolah = String(g.ID) === String(id) ? 'Ya' : 'Tidak'; });
-          AppState.kepalaSekolah = { nama: nama, nuptk: '' };
-          renderUlang();
-          toast('Berhasil', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .setKepalaSekolah(AppState.token, id);
+      simpanOptimistik({
+        judul: 'Berhasil', pesan: nama + ' kini Kepala Sekolah.',
+        terapkan: function () {
+          // Dicatat per ID, bukan per urutan — urutan daftar guru bisa berubah
+          // (guru ditambah/dihapus) sebelum server menjawab.
+          const lama = {}, dipasang = {};
+          AppState.guru.forEach(function (g) {
+            lama[g.ID] = g.KepalaSekolah;
+            dipasang[g.ID] = g.KepalaSekolah = String(g.ID) === String(id) ? 'Ya' : 'Tidak';
+          });
+          const ksLama = AppState.kepalaSekolah;
+          const ksBaru = AppState.kepalaSekolah = { nama: nama, nuptk: '' };
+          return function () {
+            AppState.guru.forEach(function (g) {
+              if (Object.prototype.hasOwnProperty.call(lama, g.ID) && g.KepalaSekolah === dipasang[g.ID]) g.KepalaSekolah = lama[g.ID];
+            });
+            if (AppState.kepalaSekolah === ksBaru) AppState.kepalaSekolah = ksLama;
+          };
+        },
+        kunci: [id],
+        kirim: function (run) { run.setKepalaSekolah(AppState.token, id); }
+      });
     }, 'Ya, Aktifkan');
 }
 
 /** Tetapkan atau cabut status Guru BK — boleh lebih dari satu orang */
 function aturGuruBK(id, nama, aktifkan) {
+  if (masihSementara(id)) return tungguSimpan();
   konfirmasi(aktifkan ? 'Tetapkan sebagai Guru BK' : 'Cabut Status Guru BK',
     aktifkan
       ? 'Jadikan "' + nama + '" sebagai Guru BK? Yang bersangkutan akan dapat memantau seluruh ' +
@@ -3537,18 +3697,17 @@ function aturGuruBK(id, nama, aktifkan) {
         'tidak dapat mengubah data siswa, data guru, maupun pengaturan aplikasi.'
       : 'Cabut status Guru BK dari "' + nama + '"? Aksesnya kembali seperti guru biasa.',
     function () {
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          const g = AppState.guru.filter(function (x) { return String(x.ID) === String(id); })[0];
-          if (g) g.GuruBK = aktifkan ? 'Ya' : 'Tidak';
-          renderUlang();
-          toast('Berhasil', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .setGuruBK(AppState.token, id, aktifkan);
+      simpanOptimistik({
+        judul: 'Berhasil', pesan: aktifkan ? nama + ' kini Guru BK.' : 'Status Guru BK ' + nama + ' dicabut.',
+        terapkan: function () {
+          const g = cariID(AppState.guru, id);
+          if (!g) return null;
+          const batalKolom = ubahKolom(g, { GuruBK: aktifkan ? 'Ya' : 'Tidak' });
+          return function () { const skr = cariID(AppState.guru, id); if (skr) batalKolom(skr); };
+        },
+        kunci: [id],
+        kirim: function (run) { run.setGuruBK(AppState.token, id, aktifkan); }
+      });
     }, aktifkan ? 'Ya, Tetapkan' : 'Ya, Cabut');
 }
 
@@ -3608,10 +3767,11 @@ function tabelJenis(daftar, tipe) {
     }).join('') + '</tbody></table></div>';
 }
 
-function bukaFormJenis(tipe, id) {
+function bukaFormJenis(tipe, id, draf) {
+  if (masihSementara(id)) return tungguSimpan();
   const isP = tipe === 'pelanggaran';
   const sumber = isP ? AppState.pelanggaran : AppState.kebaikan;
-  const j = id ? sumber.filter(function (x) { return String(x.ID) === String(id); })[0] : {};
+  const j = draf || (id ? sumber.filter(function (x) { return String(x.ID) === String(id); })[0] : {});
   const nama = isP ? (j.NamaPelanggaran || '') : (j.NamaKebaikan || '');
 
   bukaModalForm((id ? 'Edit ' : 'Tambah ') + (isP ? 'Jenis Pelanggaran' : 'Jenis Kebaikan'),
@@ -3646,6 +3806,172 @@ function hapusJenis(tipe, id, nama) {
 // BAGIAN 16: CRUD MASTER — dengan Optimistic UI
 // ════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════
+// BAGIAN 16a: SIMPAN OPTIMISTIK — gas-instant-ux Prinsip 2 (v3.5)
+// ════════════════════════════════════════════════════════════════════
+//
+// Layar berubah SEKETIKA, server menyusul di belakang. Bila server menolak
+// atau sambungan putus, tampilan dikembalikan seperti semula dan pengguna
+// diberi tahu. Formulir yang isinya diketik panjang (pengaduan, tindak lanjut,
+// data siswa/guru) dibuka lagi LENGKAP dengan isinya — tidak ada ketikan
+// yang hilang.
+//
+// Sengaja TIDAK memakai localStorage untuk data: aplikasi ini dipakai di
+// komputer bersama ruang guru, dan isinya catatan tentang anak di bawah umur.
+// Selama masih ada yang disimpan, menutup tab akan diberi peringatan.
+
+/**
+ * @param {object} o
+ *   terapkan()      ubah AppState seketika; KEMBALIKAN fungsi pembatalnya
+ *   kirim(run)      panggil aksi server pada `run` (handler sudah terpasang)
+ *   kunci           opsional — ID rekaman yang sedang diubah; selama server belum
+ *                   menjawab, rekaman ini tidak bisa diubah/dihapus lagi
+ *   sukses(res)     opsional — tukar data sementara dengan data resmi server
+ *   gagal(pesan)    opsional — sesudah dibatalkan (mis. buka lagi formulir)
+ *   segarkan()      opsional — gambar ulang bagian yang tidak ikut renderUlang
+ *   pesan, judul    toast sukses yang tampil seketika
+ *
+ * Tiga kemungkinan hasil:
+ *   1. Server menyimpan          → data sementara ditukar dengan data resmi.
+ *      (Sambungan yang putus sesaat sudah diulang otomatis oleh api.js dengan
+ *      kunci sekali-jalan — aman, tidak mungkin tersimpan dua kali.)
+ *   2. Server MENOLAK / permintaan pasti tidak sampai
+ *                                → tampilan dikembalikan, formulir dibuka lagi.
+ *   3. BELUM PASTI — sambungan putus terus selama ± 20 detik percobaan ulang.
+ *      Layar hanya boleh menampilkan yang PASTI: perubahan ditarik, formulir
+ *      dibuka lagi dengan ketikannya, dan data dimuat ulang dari server. Bila
+ *      ternyata sudah tersimpan, catatannya muncul kembali dari server.
+ */
+function simpanOptimistik(o) {
+  const kunci = (o.kunci || []).filter(Boolean).map(String);
+  let batal = null;
+  try { batal = o.terapkan(); } catch (e) { return toast('Error', e.message, 'bahaya'); }
+  AppState.nomorUbah = (AppState.nomorUbah || 0) + 1;
+  if (!AppState.sedangDisimpan) AppState.sedangDisimpan = {};
+  kunci.forEach(function (k) { AppState.sedangDisimpan[k] = (AppState.sedangDisimpan[k] || 0) + 1; });
+  // Jawaban yang datang sesudah pengguna keluar (atau berganti akun) diabaikan:
+  // jangan sampai data milik sesi lama muncul di layar pengguna berikutnya.
+  const tokenKirim = AppState.token;
+  const gambar = function () { renderUlang(); if (o.segarkan) { try { o.segarkan(); } catch (e) {} } };
+  gambar();
+  if (o.pesan) toast(o.judul || 'Tersimpan', o.pesan, 'sukses');
+  tandaSinkron(true);
+
+  let beres = false;
+  const selesai = function () {
+    if (beres) return false;
+    beres = true;
+    kunci.forEach(function (k) {
+      if (!AppState.sedangDisimpan[k]) return;
+      if (--AppState.sedangDisimpan[k] <= 0) delete AppState.sedangDisimpan[k];
+    });
+    const sesiSama = !!tokenKirim && AppState.token === tokenKirim;
+    if (sesiSama) tandaSinkron(false);
+    return sesiSama;
+  };
+  const gagal = function (pesan, belumPasti) {
+    try { if (batal) batal(); } catch (e) { /* tetap lanjut memberi tahu */ }
+    gambar();
+    if (belumPasti) kabarBelumPasti(!!o.gagal);
+    else toast('Gagal disimpan', pesan + ' Tampilan dikembalikan seperti semula.', 'bahaya');
+    // Formulir dibuka lagi LENGKAP dengan ketikannya — tetapi tidak menimpa
+    // jendela lain yang mungkin sedang diisi pengguna saat kabar gagal datang.
+    if (o.gagal) bukaSaatModalKosong(function () { o.gagal(pesan); }, tokenKirim);
+  };
+
+  o.kirim(google.script.run
+    .withSuccessHandler(function (res) {
+      if (!selesai()) return;
+      if (!res || !res.success) return gagal((res && res.message) || 'Server menolak permintaan.');
+      // Jawaban ulangan yang terlalu besar untuk disimpan server: isinya dimuat ulang saja
+      if (res.terlaluBesar) return segarkanData(true);
+      if (o.sukses) {
+        try { o.sukses(res); } catch (e) { console.error('[SIKAP BK] sukses:', e); segarkanData(true); }
+        gambar();
+      }
+    })
+    .withFailureHandler(function (err) {
+      if (!selesai()) return;
+      const pesan = (err && err.message) || 'Sambungan terputus.';
+      gagal(pesan, !!(err && err.takPasti));
+    }));
+}
+
+/**
+ * Sambungan putus terus sampai percobaan ulang habis — tidak diketahui apakah
+ * server sempat menyimpan. Muat ulang dari server supaya yang tampil adalah
+ * keadaan sebenarnya.
+ */
+function kabarBelumPasti(adaFormulir) {
+  toast('Belum pasti tersimpan', 'Sambungan internet terputus sebelum server menjawab. ' +
+    (adaFormulir ? 'Formulirnya dibuka lagi lengkap dengan isinya. ' : '') +
+    'Data sedang dimuat ulang dari server — bila catatannya ternyata sudah ada, jangan disimpan lagi.', 'bahaya');
+  segarkanData(true);
+}
+
+/**
+ * Jalankan fn begitu tidak ada jendela (modal) yang sedang terbuka atau sedang
+ * menutup. Ditunggu selama apa pun — draf yang gagal tersimpan tidak boleh
+ * dibuang diam-diam — kecuali pengguna keluar (sesinya berganti).
+ */
+function bukaSaatModalKosong(fn, token) {
+  setTimeout(function () {
+    if (token !== undefined && AppState.token !== token) return;
+    const adaModal = document.body.classList.contains('modal-open') || !!document.querySelector('.modal.show');
+    if (!adaModal) return fn();
+    bukaSaatModalKosong(fn, token);
+  }, 400);
+}
+
+/** ID sementara untuk data baru sampai server memberi ID resminya */
+function idSementara() {
+  return 'sementara-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+/**
+ * Rekaman ini belum boleh diubah lagi: ID-nya masih sementara (data baru yang
+ * belum dijawab server), atau perubahan sebelumnya masih dalam perjalanan.
+ */
+function idSementara_(id) { const s = String(id || ''); return s.indexOf('sementara-') === 0 || s.indexOf('TMP-') === 0; }
+function masihSementara(id) {
+  const s = String(id || '');
+  return s.indexOf('sementara-') === 0 || s.indexOf('TMP-') === 0 || !!(AppState.sedangDisimpan || {})[s];
+}
+function tungguSimpan() {
+  toast('Sebentar', 'Data ini masih disimpan ke server. Coba lagi beberapa detik lagi.', 'peringatan');
+}
+function posisiID(arr, id) { return arr.findIndex(function (x) { return String(x.ID) === String(id); }); }
+function cariID(arr, id) { const i = posisiID(arr, id); return i === -1 ? null : arr[i]; }
+
+/**
+ * Ubah beberapa kolom sebuah rekaman, dan kembalikan pembatalnya.
+ * Pembatal hanya memulihkan kolom yang MASIH bernilai hasil ubahan ini —
+ * perubahan lain yang terjadi sesudahnya (mis. poin siswa bertambah karena
+ * guru lain mencatat kebaikan) tidak ikut tertimpa.
+ */
+function ubahKolom(obj, ubahan) {
+  const lama = {};
+  Object.keys(ubahan).forEach(function (k) {
+    lama[k] = Object.prototype.hasOwnProperty.call(obj, k) ? { ada: true, v: obj[k] } : { ada: false };
+    obj[k] = ubahan[k];
+  });
+  return function (sasaran) {
+    const t = sasaran || obj;
+    Object.keys(ubahan).forEach(function (k) {
+      if (t[k] !== ubahan[k]) return;
+      if (lama[k].ada) t[k] = lama[k].v; else delete t[k];
+    });
+  };
+}
+
+/** Kembalikan rekaman yang tadi dihapus — hanya yang memang belum ada lagi */
+function kembalikanRekaman(namaArr, rekaman, posisi) {
+  const arr = AppState[namaArr];
+  rekaman.filter(function (r) { return posisiID(arr, r.ID) === -1; }).forEach(function (r, i) {
+    const p = posisi === undefined ? arr.length : Math.min(Math.max(0, posisi) + i, arr.length);
+    arr.splice(p, 0, r);
+  });
+}
+
 function targetArray(sheet) {
   return { 'Sheet_Siswa': 'siswa', 'Sheet_Guru': 'guru',
            'Sheet_JenisPelanggaran': 'pelanggaran', 'Sheet_JenisKebaikan': 'kebaikan' }[sheet];
@@ -3653,62 +3979,96 @@ function targetArray(sheet) {
 
 function simpanMasterData(sheet, rec, modal) {
   const kunci = targetArray(sheet);
-  const btn = document.getElementById('tombolSimpanModal');
-  const asli = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-inline"></span> Menyimpan…';
-  btn.disabled = true;
+  if (rec.ID && masihSementara(rec.ID)) return tungguSimpan();
 
-  google.script.run
-    .withSuccessHandler(function (res) {
-      btn.innerHTML = asli; btn.disabled = false;
-      if (!res.success) return toast('Gagal', res.message, 'bahaya');
-      if (modal) modal.hide();
+  // Penolakan server yang paling sering — NISN kembar — ditangkap SEBELUM
+  // formulir ditutup, supaya tidak perlu bolak-balik.
+  if (kunci === 'siswa') {
+    const kembar = AppState.siswa.filter(function (x) {
+      return String(x.NISN).trim() === String(rec.NISN).trim() && String(x.ID) !== String(rec.ID || '');
+    })[0];
+    if (kembar) return toast('Sudah terdaftar', 'NISN ' + rec.NISN + ' sudah dipakai ' + kembar.Nama + '.', 'peringatan');
+  }
 
-      const data = res.data;
-      const arr = AppState[kunci];
-      const idx = arr.findIndex(function (x) { return String(x.ID) === String(data.ID); });
-      if (idx !== -1) Object.assign(arr[idx], data); else arr.push(data);
+  const draf = Object.assign({}, rec);
+  const lokal = Object.assign({}, rec);
+  delete lokal.Password;                               // kata sandi tidak pernah disimpan di layar
+  if (kunci === 'guru' && rec.Password) lokal.PunyaPassword = true;
+  if (kunci === 'siswa') {
+    const tanpaPoin = lokal.PoinSaatIni === undefined || lokal.PoinSaatIni === '' || isNaN(Number(lokal.PoinSaatIni));
+    if (tanpaPoin && !rec.ID) lokal.PoinSaatIni = Number(AppState.konfigurasi.poinAwal) || 100;   // siswa baru
+    if (tanpaPoin && rec.ID) delete lokal.PoinSaatIni;                                          // poin tidak diubah
+    if (lokal.PoinSaatIni !== undefined) lokal.StatusZona = zonaDari(lokal.PoinSaatIni);
+  }
+  if (!lokal.Aktif && !rec.ID) lokal.Aktif = 'Ya';
 
-      // Perbarui daftar kelas bila ada kelas baru
-      if (kunci === 'siswa' && data.Kelas && AppState.kelas.indexOf(data.Kelas) === -1) {
-        AppState.kelas.push(data.Kelas); AppState.kelas.sort();
+  const baru = !rec.ID;
+  const nama = rec.Nama || rec.NamaPelanggaran || rec.NamaKebaikan || 'Data';
+  let idLokal = rec.ID;
+  if (modal) modal.hide();
+
+  simpanOptimistik({
+    pesan: nama + (baru ? ' ditambahkan.' : ' diperbarui.'),
+    terapkan: function () {
+      if (baru) {
+        idLokal = idSementara();
+        lokal.ID = idLokal;
+        AppState[kunci].push(lokal);
+        if (kunci === 'siswa') hitungUlangDaftarKelas();
+        return function () {
+          const i = posisiID(AppState[kunci], idLokal);
+          if (i !== -1) AppState[kunci].splice(i, 1);
+          if (kunci === 'siswa') hitungUlangDaftarKelas();
+        };
       }
-      renderUlang();
-      toast('Berhasil', res.message, 'sukses');
-    })
-    .withFailureHandler(function (err) {
-      btn.innerHTML = asli; btn.disabled = false;
-      toast('Error', err.message, 'bahaya');
-    })
-    .simpanMaster(AppState.token, sheet, rec);
+      const obj = cariID(AppState[kunci], rec.ID);
+      if (!obj) return null;
+      const batalKolom = ubahKolom(obj, lokal);
+      if (kunci === 'siswa') hitungUlangDaftarKelas();
+      return function () {
+        const skr = cariID(AppState[kunci], rec.ID);
+        if (skr) batalKolom(skr);
+        if (kunci === 'siswa') hitungUlangDaftarKelas();
+      };
+    },
+    kunci: [rec.ID],
+    kirim: function (run) { run.simpanMaster(AppState.token, sheet, rec); },
+    sukses: function (res) {
+      const resmi = Object.assign({}, res.data || {});
+      delete resmi.Password;                           // server mengembalikan sandi tersandikan — tidak perlu di layar
+      const obj = AppState[kunci].filter(function (x) { return String(x.ID) === String(idLokal); })[0];
+      if (obj) Object.assign(obj, resmi);
+      if (kunci === 'siswa') hitungUlangDaftarKelas();
+    },
+    gagal: function () {
+      if (kunci === 'siswa') bukaFormSiswa(rec.ID || '', draf);
+      else if (kunci === 'guru') bukaFormGuru(rec.ID || '', draf);
+      else bukaFormJenis(kunci === 'pelanggaran' ? 'pelanggaran' : 'kebaikan', rec.ID || '', draf);
+    }
+  });
 }
 
 function hapusMasterData(sheet, id) {
+  if (masihSementara(id)) return tungguSimpan();
   const kunci = targetArray(sheet);
-  const arr = AppState[kunci];
-  const idx = arr.findIndex(function (x) { return String(x.ID) === String(id); });
-  const salinan = idx !== -1 ? arr[idx] : null;
-
-  // Optimistic: hilangkan dari layar seketika
-  if (idx !== -1) arr.splice(idx, 1);
-  renderUlang();
-  tandaSinkron(true);
-
-  google.script.run
-    .withSuccessHandler(function (res) {
-      tandaSinkron(false);
-      if (!res.success) {
-        if (salinan) { arr.splice(idx, 0, salinan); renderUlang(); }
-        return toast('Gagal', res.message, 'bahaya');
-      }
-      toast('Berhasil', res.message, 'sukses');
-    })
-    .withFailureHandler(function (err) {
-      tandaSinkron(false);
-      if (salinan) { arr.splice(idx, 0, salinan); renderUlang(); }
-      toast('Error', err.message, 'bahaya');
-    })
-    .hapusMaster(AppState.token, sheet, id);
+  simpanOptimistik({
+    // Pesan "Berhasil" menunggu jawaban server (lihat sukses) — menghapus
+    // akun guru atau siswa bukan hal yang boleh dikabarkan terlalu dini.
+    terapkan: function () {
+      const idx = posisiID(AppState[kunci], id);
+      if (idx === -1) return null;
+      const salinan = AppState[kunci][idx];
+      AppState[kunci].splice(idx, 1);
+      if (kunci === 'siswa') hitungUlangDaftarKelas();
+      return function () {
+        kembalikanRekaman(kunci, [salinan], idx);
+        if (kunci === 'siswa') hitungUlangDaftarKelas();
+      };
+    },
+    kunci: [id],
+    kirim: function (run) { run.hapusMaster(AppState.token, sheet, id); },
+    sukses: function (res) { toast('Berhasil', res.message, 'sukses'); }
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -4118,6 +4478,7 @@ function pilihDanUnggah(kategori, accept) {
     } else {
       const reader = new FileReader();
       reader.onload = function () { kirim(reader.result.split(',')[1], file.type, file.name); };
+      reader.onerror = function () { tandaSinkron(false); toast('Gagal', 'Berkas tidak dapat dibaca.', 'bahaya'); };
       reader.readAsDataURL(file);
     }
   };
@@ -5012,9 +5373,12 @@ function saringKelasPengaduan(kelas) {
 }
 
 /** Formulir pengaduan baru, atau mengubah yang sudah ada */
-function bukaFormPengaduan(id) {
-  const lama = id ? AppState.pengaduan.filter(function (p) { return String(p.ID) === String(id); })[0] : null;
-  if (id && !lama) return;
+function bukaFormPengaduan(id, draf) {
+  if (masihSementara(id)) return tungguSimpan();
+  const lamaAsli = id ? AppState.pengaduan.filter(function (p) { return String(p.ID) === String(id); })[0] : null;
+  if (id && !lamaAsli) return;
+  // Dibuka lagi setelah gagal disimpan → isi formulir dari draf
+  const lama = draf ? Object.assign({}, lamaAsli || {}, draf) : lamaAsli;
   if (lama && !bolehKelolaPengaduan(lama)) {
     return toast('Tidak berwenang', 'Kasus ini dicatat oleh ' + lama.Petugas + '.', 'peringatan');
   }
@@ -5063,7 +5427,7 @@ function bukaFormPengaduan(id) {
       (lama && lama.Kategori === k ? ' selected' : '') + '>' + escHtml(k) + '</option>';
   }).join('');
 
-  bukaModalForm(lama ? 'Ubah Catatan Pengaduan' : 'Catatan Pengaduan & Konseling',
+  bukaModalForm(lamaAsli ? 'Ubah Catatan Pengaduan' : 'Catatan Pengaduan & Konseling',
     '<div class="kotak-rahasia"><i class="bi bi-shield-lock"></i><div>' +
       'Catatan ini <b>tidak mengurangi poin</b> dan tidak muncul di Laporan Per Siswa. ' +
       'Siswa yang mengadu bukan pelanggar.</div></div>' +
@@ -5137,27 +5501,45 @@ function bukaFormPengaduan(id) {
         izinWaliKelas: waliMurni || document.getElementById('pgIzin').checked
       };
       modal.hide();
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
+      const sw = AppState.siswa.filter(function (x) { return String(x.NISN) === String(nisn); })[0] || {};
+      const lokal = {
+        ID: id || idSementara(), Tanggal: payload.tanggal, NISN: nisn,
+        NamaSiswa: sw.Nama || '', Kelas: sw.Kelas || '',
+        Kategori: payload.kategori, Terlapor: payload.terlapor, Kronologi: payload.kronologi,
+        Pendampingan: payload.pendampingan,
+        IzinWaliKelas: payload.izinWaliKelas ? 'Ya' : 'Tidak',
+        StatusKasus: lama ? lama.StatusKasus : 'Proses',
+        Petugas: lama ? lama.Petugas : AppState.profil.nama,
+        IDPetugas: lama ? lama.IDPetugas : AppState.profil.id,
+        Status: 'Aktif'
+      };
+      simpanOptimistik({
+        pesan: 'Catatan pengaduan ' + (lokal.NamaSiswa || '') + ' tersimpan.',
+        terapkan: function () {
           if (id) {
-            const i = AppState.pengaduan.findIndex(function (p) { return String(p.ID) === String(id); });
-            if (i !== -1) AppState.pengaduan[i] = res.data;
-          } else {
-            AppState.pengaduan.unshift(res.data);
+            const obj = cariID(AppState.pengaduan, id);
+            if (!obj) return null;
+            const batalKolom = ubahKolom(obj, lokal);
+            return function () { const skr = cariID(AppState.pengaduan, id); if (skr) batalKolom(skr); };
           }
-          renderUlang();
-          toast('Tersimpan', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .simpanPengaduan(AppState.token, payload);
+          AppState.pengaduan.unshift(lokal);
+          return function () { const j = posisiID(AppState.pengaduan, lokal.ID); if (j !== -1) AppState.pengaduan.splice(j, 1); };
+        },
+        kunci: [id],
+        kirim: function (run) { run.simpanPengaduan(AppState.token, payload); },
+        sukses: function (res) {
+          const j = posisiID(AppState.pengaduan, lokal.ID);
+          if (j !== -1 && res.data) AppState.pengaduan[j] = Object.assign(AppState.pengaduan[j], res.data);
+        },
+        // Kronologi yang sudah diketik panjang TIDAK boleh hilang
+        gagal: function () { bukaFormPengaduan(id || null, lokal); }
+      });
     }, lama ? 'Perbarui' : 'Simpan Catatan');
 }
 
 /** Tambah satu catatan perkembangan pada kasus berjalan */
-function bukaCatatanPengaduan(idPengaduan) {
+function bukaCatatanPengaduan(idPengaduan, drafTeks) {
+  if (masihSementara(idPengaduan)) return tungguSimpan();
   const p = AppState.pengaduan.filter(function (x) { return String(x.ID) === String(idPengaduan); })[0];
   if (!p) return;
 
@@ -5185,67 +5567,80 @@ function bukaCatatanPengaduan(idPengaduan) {
         catatan: catatan
       };
       modal.hide();
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          AppState.catatanPengaduan.push(res.data);
-          renderUlang();
-          toast('Tersimpan', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .tambahCatatanPengaduan(AppState.token, payload);
+      const lokal = { ID: idSementara(), IDPengaduan: idPengaduan, Tanggal: payload.tanggal, Catatan: catatan,
+                      Petugas: AppState.profil.nama, IDPetugas: AppState.profil.id, Status: 'Aktif' };
+      simpanOptimistik({
+        pesan: 'Catatan perkembangan ditambahkan.',
+        terapkan: function () {
+          AppState.catatanPengaduan.push(lokal);
+          return function () { const j = posisiID(AppState.catatanPengaduan, lokal.ID); if (j !== -1) AppState.catatanPengaduan.splice(j, 1); };
+        },
+        // Kasusnya ikut dikunci: menutup atau menghapus kasus sebelum catatan ini
+        // sampai di server akan meninggalkan catatan tanpa induk.
+        kunci: [idPengaduan],
+        kirim: function (run) { run.tambahCatatanPengaduan(AppState.token, payload); },
+        sukses: function (res) {
+          const j = posisiID(AppState.catatanPengaduan, lokal.ID);
+          if (j !== -1 && res.data) AppState.catatanPengaduan[j] = res.data;
+        },
+        gagal: function () { bukaCatatanPengaduan(idPengaduan, catatan); }
+      });
     }, 'Tambah Catatan');
+  if (drafTeks) { const t = document.getElementById('pgcCatatan'); if (t) t.value = drafTeks; }
 }
 
 function konfirmasiTuntasPengaduan(id) {
+  if (masihSementara(id)) return tungguSimpan();
   const p = AppState.pengaduan.filter(function (x) { return String(x.ID) === String(id); })[0];
   if (!p) return;
   konfirmasi('Tutup Kasus Pendampingan',
     'Nyatakan pendampingan ' + p.NamaSiswa + ' sudah selesai? ' +
     'Catatannya tetap tersimpan, tetapi perkembangan baru tidak dapat ditambahkan lagi.',
     function () {
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          const i = AppState.pengaduan.findIndex(function (x) { return String(x.ID) === String(id); });
-          if (i !== -1) AppState.pengaduan[i].StatusKasus = 'Selesai';
-          renderUlang();
-          toast('Selesai', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .tuntaskanPengaduan(AppState.token, id);
+      simpanOptimistik({
+        judul: 'Selesai', pesan: 'Pendampingan ' + p.NamaSiswa + ' ditutup.',
+        terapkan: function () {
+          const obj = cariID(AppState.pengaduan, id);
+          if (!obj) return null;
+          const batalKolom = ubahKolom(obj, { StatusKasus: 'Selesai' });
+          return function () { const skr = cariID(AppState.pengaduan, id); if (skr) batalKolom(skr); };
+        },
+        kunci: [id],
+        kirim: function (run) { run.tuntaskanPengaduan(AppState.token, id); }
+      });
     });
 }
 
 function konfirmasiHapusPengaduan(id) {
+  if (masihSementara(id)) return tungguSimpan();
   const p = AppState.pengaduan.filter(function (x) { return String(x.ID) === String(id); })[0];
   if (!p) return;
   konfirmasi('Hapus Catatan Pengaduan',
     'Hapus seluruh catatan pendampingan ' + p.NamaSiswa + ' beserta perkembangannya?',
     function () {
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
+      simpanOptimistik({
+        judul: 'Terhapus', pesan: 'Catatan pendampingan ' + p.NamaSiswa + ' dihapus.',
+        terapkan: function () {
+          const iP = posisiID(AppState.pengaduan, id);
+          if (iP === -1) return null;
+          const kasus = AppState.pengaduan[iP];
+          const catatan = AppState.catatanPengaduan.filter(function (c) { return String(c.IDPengaduan) === String(id); });
           AppState.pengaduan = AppState.pengaduan.filter(function (x) { return String(x.ID) !== String(id); });
-          AppState.catatanPengaduan = AppState.catatanPengaduan.filter(function (c) {
-            return String(c.IDPengaduan) !== String(id);
-          });
-          renderUlang();
-          toast('Terhapus', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .hapusPengaduan(AppState.token, id);
+          AppState.catatanPengaduan = AppState.catatanPengaduan.filter(function (c) { return String(c.IDPengaduan) !== String(id); });
+          return function () {
+            kembalikanRekaman('pengaduan', [kasus], iP);
+            kembalikanRekaman('catatanPengaduan', catatan);
+          };
+        },
+        kunci: [id],
+        kirim: function (run) { run.hapusPengaduan(AppState.token, id); }
+      });
     });
 }
 
 /** Cetak laporan pendampingan — dokumen tersendiri, tidak ikut Laporan Per Siswa */
 function cetakPendampingan(id, ev) {
+  if (masihSementara(id)) return tungguSimpan();
   const pulih = tombolSibuk(ev && ev.currentTarget, '');
   tandaSinkron(true);
   google.script.run
@@ -5508,7 +5903,20 @@ const JENIS_TINDAKAN_TL = ['Konseling Pribadi', 'Konseling Kelompok', 'Pemanggil
  * @param {boolean} manual   Dibuka lewat tombol "Catatan Manual" (Guru BK & Admin) —
  *                           pemilih siswa dibuka penuh, termasuk siswa Zona Hijau.
  */
+/** Buka lagi formulir tindak lanjut berisi ketikan yang tadi gagal disimpan (v3.5) */
+function pulihkanFormTL(payload, manual) {
+  bukaFormTindakLanjut(payload.idGrup || null, payload.daftarNisn[0], manual);
+  const isi = function (id, v) { const e = document.getElementById(id); if (e) e.value = v; };
+  isi('tlTanggal', isoDariTanggal(payload.tanggal));
+  isi('tlJenis', payload.jenisTindakan);
+  isi('tlCatatan', payload.catatan);
+  isi('tlStatus', payload.statusTL);
+  AppState.formTL.nisnTerpilih = payload.daftarNisn.slice();
+  renderBlokSiswaTL();
+}
+
 function bukaFormTindakLanjut(idGrup, nisnAwal, manual) {
+  if (masihSementara(idGrup)) return tungguSimpan();
   const lama = idGrup ? sesiTindakLanjut().filter(function (g) { return g.idGrup === idGrup; })[0] : null;
 
   // Hanya Guru BK & Admin yang boleh membuka mode manual — diperiksa ulang di sini
@@ -5603,24 +6011,47 @@ function bukaFormTindakLanjut(idGrup, nisnAwal, manual) {
         statusTL: document.getElementById('tlStatus').value
       };
 
-      const btn = document.getElementById('tombolSimpanModal');
-      const asli = btn.innerHTML;
-      btn.innerHTML = '<span class="spinner-inline"></span> Menyimpan…';
-      btn.disabled = true;
-
-      google.script.run
-        .withSuccessHandler(function (res) {
-          btn.innerHTML = asli; btn.disabled = false;
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          modal.hide();
-          segarkanData();
-          toast('Berhasil', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) {
-          btn.innerHTML = asli; btn.disabled = false;
-          toast('Error', err.message, 'bahaya');
-        })
-        .simpanTindakLanjut(AppState.token, payload);
+      // v3.5 — dulu: menunggu server, lalu memuat ulang SELURUH data aplikasi
+      // (dua kali menunggu, dan cache server ikut dikosongkan untuk semua
+      // pengguna). Sekarang sesinya langsung tampil; server hanya mengembalikan
+      // baris resminya.
+      const manualTL = F.manual === true;
+      const idGrupLokal = payload.idGrup || idSementara();
+      const selesai = String(payload.statusTL).toLowerCase() === 'selesai';
+      const barisBaru = payload.daftarNisn.map(function (n) {
+        const sw = AppState.siswa.filter(function (x) { return String(x.NISN) === String(n); })[0] || {};
+        return { ID: idSementara(), IDGrup: idGrupLokal, Tanggal: payload.tanggal, NISN: String(n),
+                 NamaSiswa: sw.Nama || '', Kelas: sw.Kelas || '', JenisTindakan: payload.jenisTindakan,
+                 Pemicu: payload.pemicu, CatatanTindakLanjut: payload.catatan, Evaluasi: payload.evaluasi,
+                 StatusTL: payload.statusTL, PoinSaatTuntas: selesai ? Number(sw.PoinSaatIni) : '',
+                 Petugas: AppState.profil.nama, IDPetugas: AppState.profil.id, Status: 'Aktif' };
+      });
+      modal.hide();
+      simpanOptimistik({
+        pesan: 'Catatan tindak lanjut tersimpan untuk ' + barisBaru.length + ' siswa.',
+        terapkan: function () {
+          const lamaBaris = payload.idGrup
+            ? AppState.tindakLanjut.filter(function (t) { return String(t.IDGrup) === String(payload.idGrup); }) : [];
+          AppState.tindakLanjut = barisBaru.concat(AppState.tindakLanjut.filter(function (t) {
+            return !payload.idGrup || String(t.IDGrup) !== String(payload.idGrup);
+          }));
+          return function () {
+            const idBaru = {};
+            barisBaru.forEach(function (b) { idBaru[b.ID] = true; });
+            AppState.tindakLanjut = AppState.tindakLanjut.filter(function (t) { return !idBaru[t.ID]; });
+            kembalikanRekaman('tindakLanjut', lamaBaris, 0);
+          };
+        },
+        kunci: [payload.idGrup],
+        kirim: function (run) { run.simpanTindakLanjut(AppState.token, payload); },
+        sukses: function (res) {
+          const resmi = (res.data && res.data.tersimpan) || [];
+          const idBaru = {};
+          barisBaru.forEach(function (b) { idBaru[b.ID] = true; });
+          AppState.tindakLanjut = resmi.concat(AppState.tindakLanjut.filter(function (t) { return !idBaru[t.ID]; }));
+        },
+        gagal: function () { pulihkanFormTL(payload, manualTL); }
+      });
     });
 
   renderBlokSiswaTL();
@@ -5878,6 +6309,7 @@ function evaluasiSesi(idGrup) {
  * dinyatakan tuntas; sesudah itu evaluasi tidak dapat ditambah lagi.
  */
 function bukaFormEvaluasi(idGrup) {
+  if (masihSementara(idGrup)) return tungguSimpan();
   const g = sesiTindakLanjut().filter(function (x) { return x.idGrup === idGrup; })[0];
   if (!g) return toast('Tidak ditemukan', 'Sesi tindak lanjut ini sudah tidak ada.', 'peringatan');
   if (String(g.statusTL).toLowerCase() === 'selesai') {
@@ -5961,52 +6393,59 @@ function renderDaftarEvaluasi(idGrup) {
 }
 
 function simpanEvaluasiBaru(modal, idGrup) {
+  if (masihSementara(idGrup)) return tungguSimpan();
   const inp = document.getElementById('evCatatan');
   const catatan = inp ? inp.value.trim() : '';
   if (!catatan) return toast('Belum lengkap', 'Tulis catatan evaluasinya lebih dahulu.', 'peringatan');
 
-  const btn = document.getElementById('tombolSimpanModal');
-  const asli = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-inline"></span> Menyimpan…';
-  btn.disabled = true;
-
-  google.script.run
-    .withSuccessHandler(function (res) {
-      btn.innerHTML = asli; btn.disabled = false;
-      if (!res.success) return toast('Gagal', res.message, 'bahaya');
-
-      // Tampilan diperbarui seketika, formulir tetap terbuka untuk evaluasi berikutnya
-      AppState.evaluasi.push(res.data);
-      inp.value = '';
-      renderDaftarEvaluasi(idGrup);
-      renderUlang();
-      toast('Berhasil', res.message, 'sukses');
-    })
-    .withFailureHandler(function (err) {
-      btn.innerHTML = asli; btn.disabled = false;
-      toast('Error', err.message, 'bahaya');
-    })
-    .tambahEvaluasi(AppState.token, { idGrup: idGrup, catatan: catatan });
+  // Formulir tetap terbuka untuk evaluasi berikutnya — kotaknya dikosongkan seketika
+  const lokal = { ID: idSementara(), IDGrup: idGrup, Tanggal: formatTanggalDariInput(tanggalHariIniISO()),
+                  Catatan: catatan, Petugas: AppState.profil.nama, IDPetugas: AppState.profil.id, Status: 'Aktif' };
+  simpanOptimistik({
+    pesan: 'Catatan evaluasi ditambahkan.',
+    terapkan: function () {
+      AppState.evaluasi.push(lokal);
+      if (inp) inp.value = '';
+      return function () {
+        const j = posisiID(AppState.evaluasi, lokal.ID);
+        if (j !== -1) AppState.evaluasi.splice(j, 1);
+        const kotak = document.getElementById('evCatatan');
+        if (kotak && !kotak.value) kotak.value = catatan;      // ketikan dikembalikan
+      };
+    },
+    segarkan: function () { if (document.getElementById('evCatatan')) renderDaftarEvaluasi(idGrup); },
+    // Sesinya dikunci sebentar: menuntaskan/menghapus sesi sebelum evaluasi ini
+    // sampai di server akan meninggalkan evaluasi tanpa induk.
+    kunci: [idGrup],
+    kirim: function (run) { run.tambahEvaluasi(AppState.token, { idGrup: idGrup, catatan: catatan }); },
+    sukses: function (res) {
+      const j = posisiID(AppState.evaluasi, lokal.ID);
+      if (j !== -1 && res.data) AppState.evaluasi[j] = res.data;
+    }
+  });
 }
 
 function konfirmasiHapusEvaluasi(id, idGrup) {
+  if (masihSementara(id)) return tungguSimpan();
   konfirmasi('Hapus Catatan Evaluasi', 'Hapus satu catatan evaluasi ini?', function () {
-    tandaSinkron(true);
-    google.script.run
-      .withSuccessHandler(function (res) {
-        tandaSinkron(false);
-        if (!res.success) return toast('Gagal', res.message, 'bahaya');
-        AppState.evaluasi = AppState.evaluasi.filter(function (e) { return String(e.ID) !== String(id); });
-        renderDaftarEvaluasi(idGrup);
-        renderUlang();
-        toast('Berhasil', res.message, 'sukses');
-      })
-      .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-      .hapusEvaluasi(AppState.token, id);
+    simpanOptimistik({
+      judul: 'Berhasil', pesan: 'Catatan evaluasi dihapus.',
+      terapkan: function () {
+        const i = posisiID(AppState.evaluasi, id);
+        if (i === -1) return null;
+        const e = AppState.evaluasi[i];
+        AppState.evaluasi.splice(i, 1);
+        return function () { kembalikanRekaman('evaluasi', [e], i); };
+      },
+      segarkan: function () { if (document.getElementById('evCatatan')) renderDaftarEvaluasi(idGrup); },
+      kunci: [id],
+      kirim: function (run) { run.hapusEvaluasi(AppState.token, id); }
+    });
   }, 'Ya, Hapus');
 }
 
 function konfirmasiTuntaskan(idGrup) {
+  if (masihSementara(idGrup)) return tungguSimpan();
   const g = sesiTindakLanjut().filter(function (x) { return x.idGrup === idGrup; })[0];
   if (!g) return;
 
@@ -6016,58 +6455,62 @@ function konfirmasiTuntaskan(idGrup) {
     'Siswa akan keluar dari daftar Tindak Lanjut dan evaluasi tidak dapat ditambah lagi. ' +
     'Seluruh riwayat dan evaluasinya tetap tersimpan serta tetap tercetak pada laporan per siswa.',
     function () {
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-
-          // Cuplikan poin ikut disalin ke data lokal. Tanpa ini, tampilan masih
-          // menganggap sesi tersebut tanpa cuplikan sampai data disegarkan —
-          // sehingga pelanggaran baru pada HARI YANG SAMA tidak terdeteksi dan
-          // siswa gagal muncul kembali di daftar kasus.
-          const cuplikan = (res.data && res.data.poinSaatTuntas) || {};
+      const modal = bootstrap.Modal.getInstance(document.getElementById('modalForm'));
+      if (modal) modal.hide();
+      simpanOptimistik({
+        judul: 'Pembinaan tuntas', pesan: 'Pembinaan ' + g.jenis + ' dinyatakan tuntas.',
+        terapkan: function () {
+          const cadangan = [];
           AppState.tindakLanjut.forEach(function (t) {
             if (String(t.IDGrup) !== String(idGrup)) return;
+            cadangan.push({ t: t, status: t.StatusTL, poin: t.PoinSaatTuntas });
             t.StatusTL = 'Selesai';
-            if (cuplikan[String(t.NISN)] !== undefined) {
+            // Cuplikan poin saat tuntas — tanpa ini pelanggaran baru pada HARI YANG
+            // SAMA tidak terdeteksi dan siswa gagal muncul kembali di daftar kasus.
+            const sw = AppState.siswa.filter(function (x) { return String(x.NISN) === String(t.NISN); })[0];
+            if (sw) t.PoinSaatTuntas = Number(sw.PoinSaatIni);
+          });
+          return function () {
+            // Hanya baris yang masih berstatus hasil ubahan ini yang dikembalikan
+            cadangan.forEach(function (c) {
+              if (c.t.StatusTL !== 'Selesai') return;
+              c.t.StatusTL = c.status; c.t.PoinSaatTuntas = c.poin;
+            });
+          };
+        },
+        kunci: [idGrup],
+        kirim: function (run) { run.tuntaskanTindakLanjut(AppState.token, idGrup); },
+        sukses: function (res) {
+          const cuplikan = (res.data && res.data.poinSaatTuntas) || {};
+          AppState.tindakLanjut.forEach(function (t) {
+            if (String(t.IDGrup) === String(idGrup) && cuplikan[String(t.NISN)] !== undefined) {
               t.PoinSaatTuntas = cuplikan[String(t.NISN)];
-            } else {
-              const sw = AppState.siswa.filter(function (x) {
-                return String(x.NISN) === String(t.NISN);
-              })[0];
-              if (sw) t.PoinSaatTuntas = Number(sw.PoinSaatIni);
             }
           });
-          const modal = bootstrap.Modal.getInstance(document.getElementById('modalForm'));
-          if (modal) modal.hide();
-          renderUlang();
-          toast('Pembinaan tuntas', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .tuntaskanTindakLanjut(AppState.token, idGrup);
+        }
+      });
     }, 'Ya, Tuntaskan');
 }
 
 function konfirmasiHapusTindakLanjut(idGrup) {
+  if (masihSementara(idGrup)) return tungguSimpan();
   const g = sesiTindakLanjut().filter(function (x) { return x.idGrup === idGrup; })[0];
   if (!g) return;
   konfirmasi('Hapus Catatan Tindak Lanjut',
     'Hapus sesi ' + g.jenis + ' tanggal ' + g.tanggal + ' untuk ' + g.siswa.length + ' siswa?',
     function () {
-      tandaSinkron(true);
-      google.script.run
-        .withSuccessHandler(function (res) {
-          tandaSinkron(false);
-          if (!res.success) return toast('Gagal', res.message, 'bahaya');
-          AppState.tindakLanjut = AppState.tindakLanjut.filter(function (t) {
-            return String(t.IDGrup) !== String(idGrup);
-          });
-          renderUlang();
-          toast('Berhasil', res.message, 'sukses');
-        })
-        .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-        .hapusTindakLanjut(AppState.token, idGrup);
+      simpanOptimistik({
+        judul: 'Berhasil', pesan: 'Sesi ' + g.jenis + ' dihapus.',
+        terapkan: function () {
+          const dihapus = AppState.tindakLanjut.filter(function (t) { return String(t.IDGrup) === String(idGrup); });
+          AppState.tindakLanjut = AppState.tindakLanjut.filter(function (t) { return String(t.IDGrup) !== String(idGrup); });
+          // Dikembalikan hanya baris sesi ini — sesi lain yang dibuat sementara
+          // itu tetap di tempatnya (daftar sesi selalu diurutkan menurut tanggal).
+          return function () { kembalikanRekaman('tindakLanjut', dihapus, 0); };
+        },
+        kunci: [idGrup],
+        kirim: function (run) { run.hapusTindakLanjut(AppState.token, idGrup); }
+      });
     }, 'Ya, Hapus');
 }
 
@@ -6079,6 +6522,7 @@ function konfirmasiHapusTindakLanjut(idGrup) {
  * sehingga nama, NISN, dan kelas dijamin sama dengan catatan pembinaannya.
  */
 function bukaFormSurat(idGrup) {
+  if (masihSementara(idGrup)) return tungguSimpan();
   const daftarSesi = sesiTindakLanjut();
   if (!daftarSesi.length) {
     return toast('Belum ada sesi pembinaan',
@@ -6966,18 +7410,26 @@ function input2(label, id, nilai, tipe, placeholder) {
 }
 
 function simpanPengaturanKe(perubahan, pesan) {
-  tandaSinkron(true);
-  google.script.run
-    .withSuccessHandler(function (res) {
-      tandaSinkron(false);
-      if (!res.success) return toast('Gagal', res.message, 'bahaya');
-      Object.keys(perubahan).forEach(function (k) { AppState.konfigurasi[k] = perubahan[k]; });
-      document.getElementById('sekolahSidebar').textContent = AppState.konfigurasi.namaSekolah || 'Portal Sekolah';
-      renderUlang();
-      toast('Berhasil', pesan || res.message, 'sukses');
-    })
-    .withFailureHandler(function (err) { tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
-    .simpanKonfigurasi(AppState.token, perubahan);
+  const perbaruiSidebar = function () {
+    const el = document.getElementById('sekolahSidebar');
+    if (el) el.textContent = AppState.konfigurasi.namaSekolah || 'Portal Sekolah';
+  };
+  simpanOptimistik({
+    judul: 'Berhasil', pesan: pesan || 'Pengaturan tersimpan.',
+    terapkan: function () {
+      const tampil = {};
+      Object.keys(perubahan).forEach(function (k) {
+        if (/password/i.test(k)) return;           // kata sandi tidak disimpan di data layar
+        tampil[k] = perubahan[k];
+      });
+      // Simpan dua kali berturut-turut lalu yang pertama gagal → nilai simpanan
+      // kedua TIDAK ikut dikembalikan (ubahKolom hanya memulihkan yang masih sama).
+      const batalKolom = ubahKolom(AppState.konfigurasi, tampil);
+      return function () { batalKolom(AppState.konfigurasi); };
+    },
+    segarkan: perbaruiSidebar,
+    kirim: function (run) { run.simpanKonfigurasi(AppState.token, perubahan); }
+  });
 }
 
 function simpanIdentitas() {

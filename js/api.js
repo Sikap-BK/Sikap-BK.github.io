@@ -87,21 +87,64 @@ const API_BACA = ['doLogin', 'getDaftarGuruLogin', 'refreshData'];
  * @return {Promise<object>} jawaban { success, data, message }
  */
 /**
- * Aksi yang AMAN diulang otomatis bila sambungan terputus (v3.3).
+ * Aksi BACA yang aman diulang otomatis bila sambungan terputus (v3.3).
  *
  * "Failed to fetch" berarti peramban tidak menerima jawaban yang boleh dibaca —
  * biasanya gangguan sesaat di sisi Google, terutama pada pekerjaan berat
  * seperti membuat PDF. Mengulang sekali hampir selalu berhasil.
  *
- * Yang diulang hanya aksi yang tidak berbahaya bila ternyata terjadi dua kali:
- * membaca data, login, dan membuat dokumen (paling buruk: satu salinan PDF
- * tambahan di folder Drive). Aksi yang MENYIMPAN, MENGUBAH, atau MENGHAPUS
- * data sengaja TIDAK diulang — bisa saja permintaan pertama sebenarnya sudah
- * sampai dan tersimpan, dan mengulangnya berarti catatan poin ganda.
+ * Isinya: membaca data, login, dan membuat dokumen (paling buruk: satu salinan
+ * PDF tambahan di folder Drive — yang diunduh tetap satu).
  */
 const API_ULANG_AMAN = ['doLogin', 'getDaftarGuruLogin', 'refreshData', 'cekPasang', 'getTemplateImport',
                         'buatLaporanPDF', 'buatLaporanPendampinganPDF', 'buatSuratPDF'];
-const JEDA_ULANG_MS = 1500;
+// Jeda sebelum tiap percobaan ulang. Beberapa menit setelah "Versi baru"
+// diterapkan, server Google kadang menjawab 404 atau putus sesaat.
+const JEDA_ULANG_MS       = [1500, 3500];
+// Aksi TULIS diberi waktu lebih panjang: permintaan pertama mungkin masih
+// dikerjakan server ketika sambungannya putus, dan jawabannya ditunggu.
+const JEDA_ULANG_TULIS_MS = [1500, 3000, 5000, 8000];
+// Server menjawab "masih diproses" = permintaannya PASTI sudah diterima dan
+// sedang dikerjakan (mis. 30 siswa + foto + e-mail). Jangan menyerah: tanyakan
+// lagi tiap 5 detik, sampai batas waktu eksekusi Apps Script (6 menit).
+const JEDA_TANYA_PROSES_MS = 5000;
+const BATAS_TANYA_PROSES_MS = 6 * 60 * 1000;
+// Batas menunggu satu permintaan. Tanpa ini, sambungan yang "menggantung"
+// (mis. Wi-Fi berpindah) membuat aplikasi menunggu selamanya. Aksi tulis boleh
+// dihentikan lebih cepat — mengulangnya aman berkat kunci sekali-jalan.
+const BATAS_TUNGGU_TULIS_MS = 60 * 1000;
+const BATAS_TUNGGU_BACA_MS  = 150 * 1000;
+
+/**
+ * AKSI TULIS DAN "KUNCI SEKALI-JALAN" (v3.5)
+ *
+ * Aksi yang menyimpan, mengubah, atau menghapus data dulu tidak pernah diulang:
+ * bila sambungan putus sesudah permintaan terkirim, server mungkin SUDAH
+ * menyimpannya, dan mengulang berarti catatan poin ganda.
+ *
+ * Sekarang setiap permintaan tulis membawa kunci acak. Server (Kode.gs ≥ 3.5)
+ * mengingat kunci itu selama 10 menit beserta jawabannya. Bila permintaan yang
+ * sama datang lagi, server TIDAK menjalankannya ulang — ia hanya mengirim
+ * jawaban yang tadi. Maka mengulang menjadi aman: paling buruk, jawaban yang
+ * sama diterima dua kali.
+ *
+ * Pengulangan aksi tulis baru dinyalakan setelah server terbukti mengenal kunci
+ * ini (jawabannya bertanda `idem`). Dengan begitu, frontend baru yang tanpa
+ * sengaja dipasang di atas Kode.gs lama tidak menggandakan data.
+ */
+let API_IDEM_SERVER = false;
+
+function buatKunciIdem() {
+  let acak = '';
+  try {
+    const b = new Uint8Array(12);
+    crypto.getRandomValues(b);
+    acak = Array.prototype.map.call(b, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+  } catch (e) {
+    acak = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  }
+  return Date.now().toString(36) + '-' + acak;
+}
 
 /** Galat jaringan dari fetch() — bukan jawaban galat dari aplikasi */
 function galatJaringan(e) {
@@ -109,40 +152,84 @@ function galatJaringan(e) {
          /Failed to fetch|NetworkError|Load failed|network/i.test(String(e && e.message));
 }
 
-async function kirimSekali(aksi, muatan) {
+/** Galat sesaat yang layak dicoba lagi */
+function galatSesaat(e) { return galatJaringan(e) || (e && e.bolehUlang === true); }
+
+async function kirimSekali(aksi, muatan, batasMs) {
   let res;
-  if (API_BACA.indexOf(aksi) !== -1 && aksi !== 'doLogin') {
-    const q = Object.keys(muatan)
-      .filter(function (k) { return muatan[k] !== undefined; })
-      .map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(muatan[k]); })
-      .join('&');
-    res = await fetch(GAS_URL + '?' + q, { method: 'GET', redirect: 'follow' });
-  } else {
-    res = await fetch(GAS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // lihat catatan di atas
-      body: JSON.stringify(muatan),
-      redirect: 'follow'
-    });
+  const henti = typeof AbortController === 'function' ? new AbortController() : null;
+  const pewaktu = henti && batasMs ? setTimeout(function () { henti.abort(); }, batasMs) : null;
+  try {
+    if (API_BACA.indexOf(aksi) !== -1 && aksi !== 'doLogin') {
+      const q = Object.keys(muatan)
+        .filter(function (k) { return muatan[k] !== undefined; })
+        .map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(muatan[k]); })
+        .join('&');
+      res = await fetch(GAS_URL + '?' + q, { method: 'GET', redirect: 'follow', signal: henti ? henti.signal : undefined });
+    } else {
+      res = await fetch(GAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // lihat catatan di atas
+        body: JSON.stringify(muatan),
+        redirect: 'follow',
+        signal: henti ? henti.signal : undefined
+      });
+    }
+  } catch (e) {
+    if (pewaktu) clearTimeout(pewaktu);
+    if (e && e.name === 'AbortError') {
+      const g = new Error('Server terlalu lama menjawab.');
+      g.bolehUlang = true; g.takPasti = true;      // permintaannya mungkin sedang dikerjakan
+      throw g;
+    }
+    throw e;
   }
 
+  // Apps Script menjalankan skrip DULU, baru mengalihkan (302) ke alamat
+  // googleusercontent untuk mengambil jawabannya. Jadi bila pengalihan sudah
+  // terjadi, skripnya sudah berjalan — galat sesudah titik itu berarti
+  // "jawaban hilang", bukan "tidak diproses".
+  const sudahDijalankan = res.redirected === true;
+
   if (!res.ok) {
-    const g = new Error('Server menjawab ' + res.status);
-    g.bolehUlang = res.status >= 500;          // 5xx = gangguan sesaat di Google
+    const g = new Error(res.status === 404 && !sudahDijalankan
+      ? 'Server belum dapat dijangkau (404). Bila aplikasi baru saja diperbarui, tunggu 1–2 menit lalu coba lagi.'
+      : 'Server menjawab ' + res.status);
+    // 404 sesudah pembaruan & 5xx = gangguan sesaat di Google
+    g.bolehUlang = res.status >= 500 || res.status === 404;
+    g.takPasti = sudahDijalankan;
     throw g;
   }
 
-  const teks = await res.text();
+  let teks;
+  try { teks = await res.text(); }
+  catch (e) {
+    const g = new Error(e && e.name === 'AbortError' ? 'Server terlalu lama menjawab.' : 'Jawaban server terputus di tengah jalan.');
+    g.bolehUlang = true; g.takPasti = true;
+    throw g;
+  } finally { if (pewaktu) clearTimeout(pewaktu); }
+  let hasil;
   try {
-    return JSON.parse(teks);
+    hasil = JSON.parse(teks);
   } catch (e) {
     // Jawaban bukan JSON biasanya berarti halaman galat Google — misalnya
     // setelan akses salah, alamat /exec sudah tidak berlaku, atau gangguan sesaat.
     const g = new Error('Jawaban server tidak terbaca. Periksa GAS_URL di js/config.js ' +
                         'dan pastikan setelan aksesnya "Anyone".');
     g.bolehUlang = true;
+    g.takPasti = sudahDijalankan;
     throw g;
   }
+  if (hasil && hasil.idem) API_IDEM_SERVER = true;
+  if (hasil && hasil.sedangProses) {
+    // Permintaan yang sama (kunci sama) masih dikerjakan server — tunggu lalu tanyakan lagi
+    const g = new Error('Server masih mengerjakan permintaan sebelumnya.');
+    g.bolehUlang = true;
+    g.takPasti = true;
+    g.sedangProses = true;
+    throw g;
+  }
+  return hasil;
 }
 
 async function apiKirim(aksi, args) {
@@ -161,30 +248,53 @@ async function apiKirim(aksi, args) {
   const muatan = { action: aksi };
   namaArg.forEach(function (nama, i) { muatan[nama] = args[i]; });
 
-  const amanDiulang = API_ULANG_AMAN.indexOf(aksi) !== -1;
-  try {
-    return await kirimSekali(aksi, muatan);
-  } catch (e) {
-    const sementara = galatJaringan(e) || e.bolehUlang === true;
-    if (amanDiulang && sementara) {
-      await new Promise(function (ok) { setTimeout(ok, JEDA_ULANG_MS); });
-      try {
-        return await kirimSekali(aksi, muatan);
-      } catch (e2) {
-        if (galatJaringan(e2)) {
-          throw new Error('Tidak dapat terhubung ke server, sudah dicoba dua kali. ' +
-                          'Periksa sambungan internet, lalu coba lagi sebentar lagi.');
-        }
-        throw e2;
-      }
+  const tulis = API_ULANG_AMAN.indexOf(aksi) === -1;
+  if (tulis) muatan.kunciIdem = buatKunciIdem();      // SAMA untuk setiap percobaan ulang
+  const jeda = tulis ? JEDA_ULANG_TULIS_MS : JEDA_ULANG_MS;
+  // Unggah berkas (PDF tata tertib s.d. 10 MB) bisa lama di internet sekolah yang lambat
+  const batasMs = aksi === 'unggahBerkas' ? 5 * 60 * 1000 : (tulis ? BATAS_TUNGGU_TULIS_MS : BATAS_TUNGGU_BACA_MS);
+  const tidur = function (ms) { return new Promise(function (ok) { setTimeout(ok, ms); }); };
+
+  let terakhir = null;
+  let takPasti = false;              // pernah ada percobaan yang MUNGKIN sudah dijalankan server
+  for (let i = 0; i <= jeda.length; i++) {
+    if (i > 0) await tidur(jeda[i - 1]);
+    try {
+      return await kirimSekali(aksi, muatan, batasMs);
+    } catch (e) {
+      terakhir = e;
+      // Galat jaringan pada POST: permintaan bisa saja sudah sampai
+      if (galatJaringan(e) || e.takPasti) takPasti = true;
+      const bolehUlang = galatSesaat(e) && (!tulis || API_IDEM_SERVER);
+      if (!bolehUlang) break;
     }
-    if (galatJaringan(e)) {
-      // Aksi yang menyimpan data: permintaan mungkin SUDAH sampai sebelum terputus
-      throw new Error('Sambungan ke server terputus sebelum jawaban diterima. ' +
-                      'Periksa dulu apakah data sudah tersimpan (muat ulang halaman) sebelum mencoba lagi.');
-    }
-    throw e;
   }
+
+  // Server terakhir menjawab "masih diproses": permintaannya PASTI diterima.
+  // Terus tanyakan dengan kunci yang sama sampai jawabannya jadi.
+  const mulaiTanya = Date.now();
+  while (tulis && terakhir && terakhir.sedangProses && Date.now() - mulaiTanya < BATAS_TANYA_PROSES_MS) {
+    await tidur(JEDA_TANYA_PROSES_MS);
+    try {
+      return await kirimSekali(aksi, muatan, batasMs);
+    } catch (e) {
+      // Galat jaringan di sela-sela: tetap anggap masih diproses dan tanyakan lagi
+      terakhir = galatSesaat(e) ? Object.assign(e, { sedangProses: true }) : e;
+    }
+  }
+
+  if (tulis && takPasti) {
+    const g = new Error('Sambungan ke server terputus sebelum jawaban diterima, jadi belum pasti apakah data sudah tersimpan. ' +
+                        'Muat ulang data (tombol ↻) untuk memeriksanya sebelum mencoba lagi.');
+    g.takPasti = true;
+    throw g;
+  }
+  if (galatJaringan(terakhir)) {
+    const kali = tulis && !API_IDEM_SERVER ? 1 : jeda.length + 1;
+    throw new Error('Tidak dapat terhubung ke server' + (kali > 1 ? ', sudah dicoba ' + kali + ' kali' : '') + '. ' +
+                    'Periksa sambungan internet, lalu coba lagi sebentar lagi.');
+  }
+  throw terakhir;
 }
 
 /**
@@ -205,9 +315,16 @@ function buatPemanggil(onSukses, onGagal) {
   Object.keys(API_ARGUMEN).forEach(function (aksi) {
     pemanggil[aksi] = function () {
       const args = Array.prototype.slice.call(arguments);
-      apiKirim(aksi, args)
-        .then(function (hasil) { if (onSukses) onSukses(hasil); })
-        .catch(function (err)  {
+      // Dua cabang TERPISAH (bukan .then().catch()): galat di DALAM onSukses
+      // tidak boleh dilaporkan sebagai "gagal tersimpan" — datanya sudah
+      // tersimpan, dan pembatalan optimistik akan menghapusnya dari layar.
+      // Sama seperti google.script.run aslinya.
+      apiKirim(aksi, args).then(
+        function (hasil) {
+          if (!onSukses) return;
+          try { onSukses(hasil); } catch (e) { console.error('[SIKAP BK] ' + aksi + ' — galat pada penanganan jawaban:', e); }
+        },
+        function (err) {
           if (onGagal) onGagal(err);
           else console.error('[SIKAP BK] ' + aksi + ' gagal:', err);
         });
