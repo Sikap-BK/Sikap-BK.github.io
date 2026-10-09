@@ -342,38 +342,64 @@ function bukaAplikasi(paket, pesan, dariPerangkat) {
 // Data tetap diambil dari server setiap kali aplikasi dibuka, dan server tetap
 // memeriksa tokennya (sesi yang sudah keluar atau berakhir ditolak).
 //
-// Di komputer bersama (ruang guru, lab), centang "Tetap masuk" di layar login
-// sebaiknya dimatikan — atau selalu tekan Keluar sesudah selesai. Keluar
-// menghapus token ini dari perangkat.
+// v3.7.1 — dua tempat simpan:
+//  • sessionStorage: SELALU. Tombol refresh di tab yang sama tidak lagi
+//    kembali ke login, dicentang atau tidak. Hilang sendiri begitu tab /
+//    browser ditutup, jadi tetap aman di komputer bersama.
+//  • localStorage: hanya bila "Tetap masuk" dicentang. Bertahan walau
+//    browser ditutup, sampai 5 jam sejak login.
+// Keluar menghapus keduanya.
 const KUNCI_SESI_PERANGKAT = 'sikap_sesi';
 const LAMA_SESI_PERANGKAT_MS = 5 * 60 * 60 * 1000;
 
 function alamatServer_() { return typeof GAS_URL !== 'undefined' ? String(GAS_URL) : ''; }
 
-function simpanSesiPerangkat() {
-  // Centang dimatikan → token lama (mungkin milik orang lain) ikut dibuang
-  if (!AppState.token || AppState.ingatPerangkat === false) return lupakanSesiPerangkat();
-  try {
-    localStorage.setItem(KUNCI_SESI_PERANGKAT, JSON.stringify({
-      t: AppState.token, s: Date.now() + LAMA_SESI_PERANGKAT_MS, u: alamatServer_(),
-      p: (AppState.profil && AppState.profil.peran) || ''
-    }));
-  } catch (e) { /* penyimpanan diblokir (mode penyamaran) — cukup login seperti biasa */ }
+/** sessionStorage / localStorage, atau null bila diblokir peramban */
+function tempatSesi_(nama) {
+  try { const t = window[nama]; return t && typeof t.getItem === 'function' ? t : null; } catch (e) { return null; }
 }
 
-/** Token yang masih berlaku untuk sekolah ini, atau null */
-function bacaSesiPerangkat() {
+function simpanSesiPerangkat() {
+  if (!AppState.token) return lupakanSesiPerangkat();
+  const isi = JSON.stringify({
+    t: AppState.token, s: Date.now() + LAMA_SESI_PERANGKAT_MS, u: alamatServer_(),
+    p: (AppState.profil && AppState.profil.peran) || ''
+  });
+  const tab = tempatSesi_('sessionStorage'), awet = tempatSesi_('localStorage');
+  try { if (tab) tab.setItem(KUNCI_SESI_PERANGKAT, isi); } catch (e) { /* mode penyamaran ketat */ }
   try {
-    const d = JSON.parse(localStorage.getItem(KUNCI_SESI_PERANGKAT) || 'null');
+    if (!awet) return;
+    // Centang dimatikan → token lama (mungkin milik orang lain) ikut dibuang
+    if (AppState.ingatPerangkat === false) awet.removeItem(KUNCI_SESI_PERANGKAT);
+    else awet.setItem(KUNCI_SESI_PERANGKAT, isi);
+  } catch (e) { /* penyimpanan diblokir — refresh di tab ini tetap aman lewat sessionStorage */ }
+}
+
+function bacaSesiDari_(tempat) {
+  if (!tempat) return null;
+  try {
+    const d = JSON.parse(tempat.getItem(KUNCI_SESI_PERANGKAT) || 'null');
     if (!d || !d.t || !d.s) return null;
     // Kedaluwarsa, atau milik sekolah lain (satu situs bisa melayani banyak sekolah)
-    if (Date.now() > Number(d.s) || d.u !== alamatServer_()) { lupakanSesiPerangkat(); return null; }
+    if (Date.now() > Number(d.s) || d.u !== alamatServer_()) { tempat.removeItem(KUNCI_SESI_PERANGKAT); return null; }
     return d;
   } catch (e) { return null; }
 }
 
+/**
+ * Token yang masih berlaku untuk sekolah ini, atau null.
+ * Tab ini didahulukan: dua tab bisa dipakai dua akun berbeda, dan refresh
+ * harus kembali ke akun yang memang sedang dipakai di tab itu.
+ */
+function bacaSesiPerangkat() {
+  return bacaSesiDari_(tempatSesi_('sessionStorage')) || bacaSesiDari_(tempatSesi_('localStorage'));
+}
+
 function lupakanSesiPerangkat() {
-  try { localStorage.removeItem(KUNCI_SESI_PERANGKAT); } catch (e) {}
+  ['sessionStorage', 'localStorage'].forEach(function (n) {
+    const t = tempatSesi_(n);
+    try { if (t) t.removeItem(KUNCI_SESI_PERANGKAT); } catch (e) {}
+  });
 }
 
 /**
@@ -403,7 +429,7 @@ function pasangCentangIngat() {
   kotak.innerHTML =
     '<input class="form-check-input" type="checkbox" id="ingatPerangkat"' + (bawaanIngatPerangkat() ? ' checked' : '') + '>' +
     '<label class="form-check-label" for="ingatPerangkat">Tetap masuk di perangkat ini selama 5 jam' +
-      '<span class="form-text d-block mt-0">Matikan bila memakai komputer bersama.</span></label>';
+      '<span class="form-text d-block mt-0">Tanpa centang: refresh tetap aman, sesi berakhir saat browser ditutup (untuk komputer bersama).</span></label>';
   tombol.parentNode.insertBefore(kotak, tombol);
 }
 
@@ -428,6 +454,16 @@ function pulihkanSesiPerangkat(lanjutLogin) {
         // Hanya sesi yang dinyatakan TIDAK SAH yang dibuang. Gangguan sesaat
         // di server: token disimpan untuk percobaan berikutnya.
         if (!res || res.sesiTidakSah === true) lupakanSesiPerangkat();
+        // Kode.gs di server belum v3.7 → tidak mengenal "lanjutkanSesi".
+        // Token tetap disimpan: begitu server diperbarui, refresh berikutnya langsung masuk.
+        if (res && /Aksi tidak dikenal/i.test(String(res.message || ''))) {
+          console.warn('[SIKAP BK] Kode.gs di server belum v3.7 — sesi tidak bisa dilanjutkan.');
+          setTimeout(function () {
+            toast('Sesi belum bisa dilanjutkan',
+              'Kode.gs di Apps Script masih versi lama. Admin: pasang Kode.gs v3.7 lewat Kelola deployment → Versi baru.',
+              'peringatan');
+          }, 800);
+        }
         return lanjutLogin();
       }
       try {
