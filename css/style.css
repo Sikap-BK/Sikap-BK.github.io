@@ -1243,9 +1243,178 @@ table.tabel.tabel-riwayat .kol-pencatat { max-width: 150px; font-size: 12.5px; l
 .hamparan-sidebar { display: none; position: fixed; inset: 0; background: rgba(10,17,30,.5); z-index: 1035; }
 .hamparan-sidebar.tampil { display: block; }
 
+/* ── MENU BAWAH UNTUK HP (v3.6) ─────────────────────────────────────────────
+   Di layar di bawah 768 px, menu pindah dari laci samping ke bilah bawah —
+   dalam jangkauan ibu jari, seperti aplikasi HP pada umumnya. Input Poin
+   (pekerjaan yang paling sering) menjadi tombol bulat di tengah. Menu sisanya,
+   mode gelap, ubah password, dan keluar ada di lembar "Lainnya".
+   Tablet & laptop (≥ 768 px) tetap memakai sidebar seperti sebelumnya.        */
+:root { --tinggi-nav: 64px; }
+.nav-bawah, .lembar, .lembar-hampar { display: none; }
+
+@media (max-width: 767.98px) {
+  /* Tombol ☰ di bilah atas tidak diperlukan lagi */
+  .topbar > button[onclick="bukaSidebar()"] { display: none !important; }
+  .topbar { padding-top: calc(10px + env(safe-area-inset-top, 0px)); padding-bottom: 10px; }
+  .topbar .remah { display: none; }
+  .topbar .judul-halaman { font-size: 17px; }
+
+  /* Konten tidak boleh tertutup bilah bawah */
+  .area-konten { padding-bottom: calc(var(--tinggi-nav) + var(--s-lg) + env(safe-area-inset-bottom, 0px)); }
+
+  .nav-bawah {
+    display: flex; align-items: stretch;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 1030;
+    height: calc(var(--tinggi-nav) + env(safe-area-inset-bottom, 0px));
+    padding: 0 4px env(safe-area-inset-bottom, 0px);
+    background: var(--bg-surface); border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 18px -10px rgba(15, 39, 68, .25);
+    transition: transform .22s ease;
+  }
+  /* Saat mengetik, bilah disembunyikan agar tidak menutupi kolom di atas papan ketik */
+  body.ketik-hp .nav-bawah { transform: translateY(110%); }
+
+  .nb-item {
+    flex: 1 1 0; min-width: 0; position: relative;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    background: none; border: 0; padding: 6px 1px; margin: 0;
+    color: var(--text-secondary); font-family: inherit; font-size: 10.5px; font-weight: 500; line-height: 1.15;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .nb-ikon {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    width: 54px; height: 30px; border-radius: var(--r-pill); font-size: 19px;
+    transition: background .18s ease;
+  }
+  /* "Tindak Lanjut" (label terpanjang) muat utuh mulai layar 360 px */
+  .nb-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.01em; }
+  .nb-item.aktif { color: var(--navy); font-weight: 600; }
+  .nb-item.aktif .nb-ikon { background: var(--navy-soft); }
+  .nb-item:active .nb-ikon { background: var(--navy-soft); }
+  .nb-item:focus-visible { outline: 2px solid var(--navy); outline-offset: -3px; border-radius: var(--r-md); }
+
+  /* Input Poin — tombol bulat menonjol di tengah */
+  .nb-item.nb-tengah { color: var(--text-primary); }
+  .nb-item.nb-tengah .nb-ikon {
+    width: 54px; height: 54px; margin-top: -24px; font-size: 26px;
+    background: var(--gold); color: #3a2600;
+    box-shadow: 0 8px 16px -6px rgba(221, 145, 16, .65), 0 0 0 5px var(--bg-surface);
+  }
+  .nb-item.nb-tengah:active .nb-ikon,
+  .nb-item.nb-tengah.aktif .nb-ikon { background: var(--gold-hover); }
+
+  /* Angka "perlu perhatian" (siswa zona merah, tindak lanjut) */
+  .nb-hitung {
+    position: absolute; top: -4px; left: calc(50% + 6px);
+    min-width: 19px; height: 19px; padding: 0 5px; border-radius: var(--r-pill);
+    background: var(--merah-line); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid var(--bg-surface);
+  }
+  .nb-titik {
+    position: absolute; top: 2px; left: calc(50% + 8px); width: 10px; height: 10px;
+    border-radius: 50%; background: var(--merah-line); border: 2px solid var(--bg-surface);
+  }
+
+  /* Pesan & bilah aksi Data Siswa naik di atas bilah bawah */
+  body.ada-nav-bawah .toast-container.position-fixed {
+    bottom: calc(var(--tinggi-nav) + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  body.ada-nav-bawah #bilahPilihSiswa {
+    bottom: calc(var(--tinggi-nav) + 8px + env(safe-area-inset-bottom, 0px));
+  }
+  body.ada-nav-bawah.ketik-hp #bilahPilihSiswa { bottom: 8px; }
+
+  /* ── Lembar "Lainnya" ── */
+  .lembar-hampar {
+    display: block; position: fixed; inset: 0; z-index: 1041;
+    background: rgba(10, 17, 30, .5); opacity: 0; pointer-events: none;
+    transition: opacity .22s ease;
+  }
+  .lembar-hampar.tampil { opacity: 1; pointer-events: auto; }
+  body.lembar-buka { overflow: hidden; }
+
+  .lembar {
+    display: flex; flex-direction: column;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 1042;
+    max-height: 88vh; max-height: 88dvh;
+    background: var(--bg-surface); color: var(--text-primary);
+    border-radius: 20px 20px 0 0; box-shadow: var(--shadow-lg);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    transform: translateY(105%); visibility: hidden;
+    transition: transform .26s cubic-bezier(.2, .8, .2, 1), visibility 0s linear .26s;
+  }
+  .lembar.tampil {
+    transform: translateY(0); visibility: visible;
+    transition: transform .26s cubic-bezier(.2, .8, .2, 1), visibility 0s;
+  }
+  .lembar.diseret { transition: none; }
+  .lembar:focus { outline: none; }
+  .lembar-pegangan {
+    width: 40px; height: 4px; border-radius: var(--r-pill); background: var(--border-strong);
+    margin: 10px auto 2px; flex: 0 0 auto;
+  }
+  .lembar-kepala {
+    display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
+    padding: 10px var(--s-md) 14px; border-bottom: 1px solid var(--border);
+    touch-action: none;
+  }
+  .lembar-kepala .avatar {
+    width: 44px; height: 44px; flex: 0 0 44px; border-radius: var(--r-pill);
+    background: var(--gold); color: #3a2600; font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .lembar-kepala .lk-teks { min-width: 0; flex: 1; }
+  .lembar-kepala .lk-nama { font-weight: 600; font-size: 15px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lembar-kepala .lk-sub { font-size: 12px; color: var(--text-secondary); line-height: 1.35; }
+  .lembar-isi { overflow-y: auto; overscroll-behavior: contain; padding: 4px var(--s-md) var(--s-md); }
+  .lembar-judul {
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600;
+    color: var(--text-muted); margin: 14px 2px 8px;
+  }
+  .petak-menu { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .petak {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px;
+    min-height: 88px; padding: 12px 4px 10px; margin: 0;
+    background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: var(--r-lg);
+    color: var(--text-primary); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.25;
+    text-align: center; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .petak:active { background: var(--navy-soft); }
+  .petak.aktif { border-color: var(--navy); background: var(--navy-soft); }
+  .petak-ikon {
+    position: relative; width: 40px; height: 40px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg-surface); color: var(--navy); font-size: 19px;
+  }
+  .petak .nb-hitung { top: -6px; left: auto; right: -10px; }
+
+  .daftar-akun { border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+  .baris-akun {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px;
+    padding: 10px 14px; margin: 0; background: var(--bg-surface); border: 0;
+    border-top: 1px solid var(--border);
+    color: var(--text-primary); font-family: inherit; font-size: 14px; text-align: left; cursor: pointer;
+  }
+  .baris-akun:first-child { border-top: 0; }
+  .baris-akun > i:first-child { font-size: 18px; width: 22px; text-align: center; color: var(--text-secondary); }
+  .baris-akun .ujung { margin-left: auto; color: var(--text-muted); font-size: 16px; }
+  .baris-akun .saklar { font-size: 26px; color: var(--text-muted); line-height: 1; }
+  [data-theme="dark"] .baris-akun .saklar { color: var(--gold); }
+  .baris-akun.bahaya, .baris-akun.bahaya > i:first-child { color: var(--merah-tx); }
+  .baris-akun:active { background: var(--bg-surface-2); }
+}
+
+@media (max-width: 767.98px) and (prefers-reduced-motion: reduce) {
+  .nav-bawah, .lembar, .lembar-hampar { transition: none; }
+}
+
 /* ── RESPONSIF ──────────────────────────────────────────────────────────── */
 @media (max-width: 991.98px) {
-  .tata-utama { grid-template-columns: 1fr; }
+  /* minmax(0,…) — bukan 1fr polos. "1fr" ikut melebar mengikuti isi terlebar
+     (tabel, grafik), sehingga Dashboard di HP melebar ± 650 px dan terpotong di
+     kanan. Akibatnya lagi, bilah menu bawah ikut terdorong keluar layar (v3.6). */
+  .tata-utama { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 767.98px) {
   h1 { font-size: 26px; line-height: 32px; }

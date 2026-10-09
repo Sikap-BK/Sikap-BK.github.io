@@ -99,6 +99,23 @@ document.addEventListener('DOMContentLoaded', function () {
     if (AppState.antrianSync > 0) { ev.preventDefault(); ev.returnValue = ''; return ''; }
   });
 
+  // Menu bawah HP (v3.6): Esc menutup lembar "Lainnya"; saat mengetik, bilah
+  // bawah disembunyikan supaya tidak menutupi kolom yang sedang diisi.
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') tutupLembarLainnya(true);
+  });
+  const KOLOM_KETIK = 'input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])' +
+                      ':not([type=file]):not([type=range]):not([type=date]):not([type=color]), textarea';
+  document.addEventListener('focusin', function (ev) {
+    if (layarHP() && ev.target.matches && ev.target.matches(KOLOM_KETIK)) document.body.classList.add('ketik-hp');
+  });
+  document.addEventListener('focusout', function () {
+    setTimeout(function () {
+      const a = document.activeElement;
+      if (!(a && a.matches && a.matches(KOLOM_KETIK))) document.body.classList.remove('ketik-hp');
+    }, 80);
+  });
+
   // Tutup daftar hasil pencarian siswa saat pengguna mengklik di luar blok pemilih.
   // Cakupannya SELURUH blok (kolom cari + filter kelas + tombol Semua/Tambahkan),
   // bukan kotak carinya saja — kalau tidak, menekan "Tambahkan" justru menutup
@@ -179,6 +196,13 @@ function perbaruiIkonTema(tema) {
   set('saklarIkon', gelap ? 'bi bi-toggle-on' : 'bi bi-toggle-off');
   const lbl = document.getElementById('labelTema');
   if (lbl) lbl.textContent = gelap ? 'Mode Terang' : 'Mode Gelap';
+  // Salinannya di lembar "Lainnya" (HP)
+  set('lembarIkonTema', gelap ? 'bi bi-sun' : 'bi bi-moon-stars');
+  set('lembarSaklarIkon', gelap ? 'bi bi-toggle-on saklar ms-auto' : 'bi bi-toggle-off saklar ms-auto');
+  const lbl2 = document.getElementById('lembarLabelTema');
+  if (lbl2) lbl2.textContent = 'Mode Gelap';
+  const sk = document.getElementById('lembarSaklarTema');
+  if (sk) sk.setAttribute('aria-checked', gelap ? 'true' : 'false');
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -618,6 +642,8 @@ function tanganiLogout() {
     AppState.pengaduan = []; AppState.catatanPengaduan = [];
     AppState.pilihSiswa = []; AppState.siswaTampil = []; AppState.detailNisn = null;
     AppState.sedangDisimpan = {}; AppState.segarkanTertunda = false;
+    tutupLembarLainnya();
+    document.body.classList.remove('ada-nav-bawah', 'ketik-hp');
     lupakanPreferensi();
 
     document.getElementById('layarAplikasi').style.display = 'none';
@@ -749,7 +775,9 @@ function definisiMenu() {
 
 function renderMenu() {
   const merah = AppState.siswa.filter(function (s) { return zonaDari(s.PoinSaatIni) === 'Merah'; }).length;
-  document.getElementById('menuSidebar').innerHTML = definisiMenu().map(function (m) {
+  const menu = definisiMenu();
+  renderNavBawah(menu, merah);
+  document.getElementById('menuSidebar').innerHTML = menu.map(function (m) {
     if (m.seksi) return '<li class="seksi">' + escHtml(m.seksi) + '</li>';
     let lencana = '';
     if (m.id === 'dataSiswa' && merah > 0) lencana = '<span class="lencana">' + merah + '</span>';
@@ -757,6 +785,191 @@ function renderMenu() {
     return '<li><a href="javascript:void(0)" data-halaman="' + m.id + '" onclick="navigateTo(\'' + m.id + '\')">' +
       '<i class="bi ' + m.ikon + '"></i><span>' + escHtml(m.label) + '</span>' + lencana + '</a></li>';
   }).join('');
+}
+
+// ── MENU BAWAH UNTUK HP (v3.6) ─────────────────────────────────────────
+//
+// Di layar < 768 px (lihat style.css) menu tampil sebagai bilah di bawah layar:
+// empat tujuan utama + tombol "Lainnya". Isinya diambil dari definisiMenu(),
+// jadi hak akses tiap peran tetap SATU sumber — tidak ada menu yang bisa
+// muncul di HP padahal tidak muncul di sidebar, atau sebaliknya.
+
+/** Label ringkas untuk bilah bawah (lebarnya ± 70 px per tombol) */
+const LABEL_NAV_BAWAH = {
+  dashboard: 'Dashboard', inputPoin: 'Input Poin', dataSiswa: 'Siswa', riwayat: 'Riwayat',
+  tataTertib: 'Tata Tertib', tindakLanjut: 'Tindak Lanjut', laporan: 'Laporan',
+  jenisPoin: 'Jenis Poin', dataGuru: 'Data Guru', pengaturan: 'Pengaturan', portalSiswa: 'Kartu Saya'
+};
+
+/** Empat menu utama di bilah bawah, sesuai pekerjaan harian tiap peran */
+function idNavBawah(menu) {
+  const ada = function (id) { return menu.some(function (m) { return m.id === id; }); };
+  let utama;
+  if (isSiswa())          utama = ['portalSiswa', 'tataTertib'];
+  else if (isGuruBiasa()) utama = ['dashboard', 'riwayat', 'inputPoin', 'tataTertib'];
+  else                    utama = ['dashboard', 'dataSiswa', 'inputPoin', ada('tindakLanjut') ? 'tindakLanjut' : 'riwayat'];
+  return utama.filter(ada);
+}
+
+/** Bilah bawah & lembar "Lainnya" dibuat sekali, di dalam layar aplikasi */
+function pasangNavBawah() {
+  const wadah = document.getElementById('layarAplikasi');
+  if (!wadah || document.getElementById('navBawah')) return;
+  const nav = document.createElement('nav');
+  nav.className = 'nav-bawah'; nav.id = 'navBawah'; nav.setAttribute('aria-label', 'Menu utama');
+  const hampar = document.createElement('div');
+  hampar.className = 'lembar-hampar'; hampar.id = 'lembarHampar';
+  hampar.addEventListener('click', tutupLembarLainnya);
+  const lembar = document.createElement('section');
+  lembar.className = 'lembar'; lembar.id = 'lembarLainnya';
+  lembar.setAttribute('role', 'dialog'); lembar.setAttribute('aria-modal', 'true');
+  lembar.setAttribute('aria-labelledby', 'judulLembar'); lembar.tabIndex = -1;
+  wadah.appendChild(nav); wadah.appendChild(hampar); wadah.appendChild(lembar);
+  pasangGeserTutup(lembar);
+}
+
+function renderNavBawah(menu, merah) {
+  pasangNavBawah();
+  const nav = document.getElementById('navBawah');
+  if (!nav || !AppState.profil) return;
+  document.body.classList.add('ada-nav-bawah');
+
+  const item = menu.filter(function (m) { return m.id; });
+  const hitung = function (m) { return m.id === 'dataSiswa' ? merah : (Number(m.lencana) || 0); };
+  const idUtama = idNavBawah(item);
+  const utama = idUtama.map(function (id) { return item.filter(function (m) { return m.id === id; })[0]; });
+  const sisa = item.filter(function (m) { return idUtama.indexOf(m.id) === -1; });
+  const angka = function (n) { return n ? '<span class="nb-hitung">' + (n > 99 ? '99+' : n) + '</span>' : ''; };
+  const lembarBuka = document.getElementById('lembarLainnya').classList.contains('tampil');
+
+  nav.innerHTML = utama.map(function (m) {
+    const tengah = m.id === 'inputPoin';
+    const label = LABEL_NAV_BAWAH[m.id] || m.label;
+    const n = hitung(m);
+    return '<button type="button" class="nb-item' + (tengah ? ' nb-tengah' : '') + '" data-halaman="' + m.id + '" ' +
+      'onclick="navigateTo(\'' + m.id + '\')" aria-label="' + escHtml(m.label + (n ? ', ' + n + ' perlu perhatian' : '')) + '">' +
+      '<span class="nb-ikon"><i class="bi ' + (tengah ? 'bi-plus-lg' : m.ikon) + '"></i>' + angka(n) + '</span>' +
+      '<span class="nb-label">' + escHtml(label) + '</span></button>';
+  }).join('') +
+  '<button type="button" class="nb-item" id="nbLainnya" onclick="bukaLembarLainnya()" ' +
+    'aria-haspopup="dialog" aria-expanded="' + lembarBuka + '" aria-controls="lembarLainnya">' +
+    '<span class="nb-ikon"><i class="bi bi-grid"></i>' +
+      (sisa.some(function (m) { return hitung(m) > 0; }) ? '<span class="nb-titik"></span>' : '') + '</span>' +
+    '<span class="nb-label">Lainnya</span></button>';
+
+  renderLembarLainnya(sisa, hitung, angka);
+  tandaiNavBawah(AppState.halamanAktif);
+}
+
+function renderLembarLainnya(sisa, hitung, angka) {
+  const lembar = document.getElementById('lembarLainnya');
+  if (!lembar) return;
+  const p = AppState.profil || {};
+  const sekolah = (AppState.konfigurasi && AppState.konfigurasi.namaSekolah) || '';
+  lembar.innerHTML =
+    '<div class="lembar-pegangan" aria-hidden="true"></div>' +
+    '<div class="lembar-kepala">' +
+      '<div class="avatar" aria-hidden="true">' + escHtml(inisial(p.nama)) + '</div>' +
+      '<div class="lk-teks"><div class="lk-nama" id="judulLembar">' + escHtml(p.nama || '') + '</div>' +
+        '<div class="lk-sub">' + escHtml(p.labelPeran || '') + (sekolah ? ' • ' + escHtml(sekolah) : '') + '</div></div>' +
+      '<button type="button" class="btn-ikon" id="tutupLembar" onclick="tutupLembarLainnya(true)" aria-label="Tutup menu">' +
+        '<i class="bi bi-x-lg"></i></button>' +
+    '</div>' +
+    '<div class="lembar-isi">' +
+      (sisa.length
+        ? '<div class="lembar-judul">Menu lainnya</div><div class="petak-menu">' +
+          sisa.map(function (m) {
+            return '<button type="button" class="petak" data-halaman="' + m.id + '" onclick="navigateTo(\'' + m.id + '\')">' +
+              '<span class="petak-ikon"><i class="bi ' + m.ikon + '"></i>' + angka(hitung(m)) + '</span>' +
+              '<span>' + escHtml(m.label) + '</span></button>';
+          }).join('') + '</div>'
+        : '') +
+      '<div class="lembar-judul">Akun</div>' +
+      '<div class="daftar-akun">' +
+        '<button type="button" class="baris-akun" onclick="gantiTema()" role="switch" id="lembarSaklarTema" aria-checked="false">' +
+          '<i class="bi bi-moon-stars" id="lembarIkonTema"></i><span id="lembarLabelTema">Mode Gelap</span>' +
+          '<i class="bi bi-toggle-off saklar ms-auto" id="lembarSaklarIkon"></i></button>' +
+        (p.peran === 'guru'
+          ? '<button type="button" class="baris-akun" onclick="tutupLembarLainnya(); bukaUbahPassword()">' +
+            '<i class="bi bi-key"></i><span>Ubah Password</span><i class="bi bi-chevron-right ujung"></i></button>'
+          : '') +
+        '<button type="button" class="baris-akun bahaya" onclick="tutupLembarLainnya(); tanganiLogout()">' +
+          '<i class="bi bi-box-arrow-left"></i><span>Keluar</span></button>' +
+      '</div>' +
+    '</div>';
+  perbaruiIkonTema(document.documentElement.getAttribute('data-theme'));
+}
+
+/** Tandai menu yang sedang dibuka; halaman di dalam "Lainnya" menandai tombol Lainnya */
+function tandaiNavBawah(halaman) {
+  const nav = document.getElementById('navBawah');
+  if (!nav) return;
+  const kunci = halaman === 'detailSiswa' ? 'dataSiswa' : halaman;
+  let ketemu = false;
+  nav.querySelectorAll('.nb-item[data-halaman]').forEach(function (b) {
+    const on = b.dataset.halaman === kunci;
+    b.classList.toggle('aktif', on);
+    if (on) { ketemu = true; b.setAttribute('aria-current', 'page'); } else b.removeAttribute('aria-current');
+  });
+  const lain = document.getElementById('nbLainnya');
+  if (lain) lain.classList.toggle('aktif', !ketemu);
+  document.querySelectorAll('#lembarLainnya .petak').forEach(function (p) {
+    p.classList.toggle('aktif', p.dataset.halaman === kunci);
+  });
+}
+
+function bukaLembarLainnya() {
+  const lembar = document.getElementById('lembarLainnya');
+  if (!lembar) return;
+  lembar.classList.add('tampil');
+  document.getElementById('lembarHampar').classList.add('tampil');
+  document.body.classList.add('lembar-buka');
+  const b = document.getElementById('nbLainnya');
+  if (b) b.setAttribute('aria-expanded', 'true');
+  // Fokus dipindah ke dalam lembar (untuk pembaca layar & papan ketik)
+  setTimeout(function () { lembar.focus({ preventScroll: true }); }, 60);
+}
+
+/** @param {boolean} kembalikanFokus  ditutup lewat tombol ✕ / Esc → fokus kembali ke tombol Lainnya */
+function tutupLembarLainnya(kembalikanFokus) {
+  const lembar = document.getElementById('lembarLainnya');
+  if (!lembar || !lembar.classList.contains('tampil')) return;
+  const fokusDiDalam = kembalikanFokus === true && lembar.contains(document.activeElement);
+  lembar.classList.remove('tampil', 'diseret');
+  lembar.style.transform = '';
+  document.getElementById('lembarHampar').classList.remove('tampil');
+  document.body.classList.remove('lembar-buka');
+  const b = document.getElementById('nbLainnya');
+  if (b) { b.setAttribute('aria-expanded', 'false'); if (fokusDiDalam) b.focus({ preventScroll: true }); }
+}
+
+/** Lembar ditutup dengan menyeret pegangan/kepalanya ke bawah, seperti aplikasi HP */
+function pasangGeserTutup(lembar) {
+  let awalY = null, geser = 0;
+  lembar.addEventListener('touchstart', function (e) {
+    if (!e.target.closest('.lembar-pegangan, .lembar-kepala') || e.target.closest('button')) return;
+    awalY = e.touches[0].clientY; geser = 0;
+    lembar.classList.add('diseret');
+  }, { passive: true });
+  lembar.addEventListener('touchmove', function (e) {
+    if (awalY === null) return;
+    geser = Math.max(0, e.touches[0].clientY - awalY);
+    lembar.style.transform = 'translateY(' + geser + 'px)';
+  }, { passive: true });
+  const lepas = function () {
+    if (awalY === null) return;
+    awalY = null;
+    lembar.classList.remove('diseret');
+    lembar.style.transform = '';
+    if (geser > 80) tutupLembarLainnya();
+  };
+  lembar.addEventListener('touchend', lepas);
+  lembar.addEventListener('touchcancel', lepas);
+}
+
+/** Layar HP = di bawah 768 px, sama dengan batas di style.css */
+function layarHP() {
+  return !!(window.matchMedia && window.matchMedia('(max-width: 767.98px)').matches);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -788,6 +1001,8 @@ function navigateTo(halaman) {
   document.querySelectorAll('.sidebar-nav a').forEach(function (a) {
     a.classList.toggle('aktif', a.dataset.halaman === halaman);
   });
+  tandaiNavBawah(halaman);
+  tutupLembarLainnya();
 
   document.getElementById('judulTopbar').textContent = JUDUL[halaman][0];
   document.getElementById('remahHalaman').textContent = JUDUL[halaman][1];
