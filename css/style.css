@@ -1243,6 +1243,39 @@ table.tabel.tabel-riwayat .kol-pencatat { max-width: 150px; font-size: 12.5px; l
 .hamparan-sidebar { display: none; position: fixed; inset: 0; background: rgba(10,17,30,.5); z-index: 1035; }
 .hamparan-sidebar.tampil { display: block; }
 
+/* ── PDF DI HP (v3.7) — kartu "Buka / Unduh" sebagai ganti bingkai pratinjau ─ */
+.kartu-pdf-hp {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px;
+  padding: var(--s-lg) var(--s-md); border: 1px dashed var(--border-strong); border-radius: var(--r-lg);
+  background: var(--bg-surface-2);
+}
+.kartu-pdf-hp .ikon {
+  width: 56px; height: 56px; border-radius: 16px; margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--merah-bg); color: var(--merah-tx); font-size: 28px;
+}
+.kartu-pdf-hp .nama { font-size: 12.5px; font-weight: 600; word-break: break-all; color: var(--text-primary); }
+.kartu-pdf-hp .ket { font-size: 12px; color: var(--text-secondary); }
+
+/* ── QR CODE LOGIN SISWA (v3.7) ──────────────────────────────────────────── */
+.qr-poster { text-align: center; }
+.qr-poster img {
+  width: 100%; max-width: 360px; height: auto; display: block; margin: 0 auto;
+  border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+
+/* ── FOTO BUKTI: KAMERA HP (v3.7) ───────────────────────────────────────────
+   Layar sentuh (HP/tablet) mendapat tombol "Ambil Foto" yang langsung membuka
+   kamera, dan "Pilih dari Galeri". Laptop tetap memakai kotak klik biasa.    */
+.pilih-foto { display: flex; gap: 8px; }
+.pilih-foto .btn { flex: 1 1 0; min-height: 52px; font-weight: 600; }
+.pilih-foto .btn i { font-size: 18px; }
+.hanya-sentuh { display: none !important; }
+@media (pointer: coarse) {
+  .hanya-sentuh { display: flex !important; }
+  .hanya-tetikus { display: none !important; }
+}
+
 /* ── MENU BAWAH UNTUK HP (v3.6) ─────────────────────────────────────────────
    Di layar di bawah 768 px, menu pindah dari laci samping ke bilah bawah —
    dalam jangkauan ibu jari, seperti aplikasi HP pada umumnya. Input Poin

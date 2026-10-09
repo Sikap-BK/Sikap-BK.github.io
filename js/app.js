@@ -126,6 +126,20 @@ document.addEventListener('DOMContentLoaded', function () {
     if (hasil && blok && !blok.contains(ev.target)) hasil.innerHTML = '';
   });
 
+  // v3.7 — Centang "Tetap masuk" + tab peran dari alamat (QR login siswa: ?peran=siswa)
+  pasangCentangIngat();
+  try {
+    const peranAlamat = new URLSearchParams(window.location.search).get('peran');
+    if (['admin', 'guru', 'siswa'].indexOf(peranAlamat) !== -1) pilihPeran(peranAlamat);
+  } catch (e) { /* peramban sangat lama — abaikan */ }
+
+  // v3.7 — Sesi yang tersimpan di perangkat dipulihkan lebih dulu. Layar login
+  // baru ditampilkan bila sesi itu tidak ada / tidak berlaku, dan sesudah
+  // daftar guru termuat — supaya layar login tidak sempat berkedip.
+  let loginSiap = false, perluLogin = false;
+  const tampilLoginBilaPerlu = function () { if (loginSiap && perluLogin) tampilkanLayarLogin(); };
+  pulihkanSesiPerangkat(function () { perluLogin = true; tampilLoginBilaPerlu(); });
+
   // Muat daftar guru + identitas sekolah untuk halaman login (satu panggilan)
   google.script.run
     .withSuccessHandler(function (res) {
@@ -140,19 +154,26 @@ document.addEventListener('DOMContentLoaded', function () {
         tampilGalatLogin(res && res.message ? res.message :
           'Database belum siap. Jalankan setupAppEnvironment() di editor Apps Script.');
       }
-      tampilkanLayarLogin();
+      loginSiap = true; tampilLoginBilaPerlu();
     })
     .withFailureHandler(function (err) {
       tampilGalatLogin('Gagal terhubung ke server: ' + err.message);
-      tampilkanLayarLogin();
+      loginSiap = true; tampilLoginBilaPerlu();
     })
     .getDaftarGuruLogin();
 });
 
-function tampilkanLayarLogin() {
+function sembunyikanOverlayMuat() {
   const ov = document.getElementById('overlayMuat');
+  if (!ov) return;
   ov.style.opacity = '0';
   setTimeout(function () { ov.style.display = 'none'; }, 300);
+}
+
+function tampilkanLayarLogin() {
+  sembunyikanOverlayMuat();
+  // Sesi sudah dipulihkan dari perangkat → aplikasi sudah terbuka, login tidak perlu tampil
+  if (AppState.token) return;
   document.getElementById('layarLogin').style.display = 'flex';
 }
 
@@ -247,6 +268,10 @@ function tanganiLogin(ev) {
 
   if (!username || !password) return tampilGalatLogin('Lengkapi seluruh kolom login.');
 
+  const ingat = document.getElementById('ingatPerangkat');
+  AppState.ingatPerangkat = ingat ? ingat.checked : false;
+  if (ingat) ingatPilihanIngat(ingat.checked);
+
   const btn = document.getElementById('tombolLogin');
   const asli = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-inline"></span> Memverifikasi…';
@@ -288,8 +313,11 @@ function tanganiLogin(ev) {
 }
 
 /** Membuka layar aplikasi dengan paket data dari server */
-function bukaAplikasi(paket, pesan) {
+function bukaAplikasi(paket, pesan, dariPerangkat) {
   terapkanBootstrap(paket);
+  // v3.7 — ingat sesi di perangkat ini selama 5 jam (bila dicentang saat login).
+  // Sesi yang DIPULIHKAN tidak diperpanjang: 5 jam dihitung sejak login.
+  if (!dariPerangkat) simpanSesiPerangkat();
 
   document.getElementById('layarLogin').style.display = 'none';
   document.getElementById('layarAplikasi').style.display = 'block';
@@ -301,7 +329,127 @@ function bukaAplikasi(paket, pesan) {
   // Catat "berhasil masuk" SESUDAH layar terbuka (v2.18). Sebelumnya baris
   // log ini ditulis di server sebelum data diambil, sehingga pengguna ikut
   // menunggu operasi tulis yang tidak ada hubungannya dengan layarnya.
-  catatMasukDiamDiam();
+  // Sesi yang dipulihkan dari perangkat dicatat terpisah (LANJUT_SESI), bukan LOGIN.
+  catatMasukDiamDiam(dariPerangkat ? 'lanjut' : '');
+}
+
+// ── SESI TERSIMPAN DI PERANGKAT (v3.7) ─────────────────────────────────
+//
+// Supaya guru yang menutup halaman (atau HP-nya memuat ulang tab) tidak perlu
+// login lagi, TOKEN sesi disimpan di perangkat selama 5 jam sejak login.
+//
+// Yang disimpan HANYA token + batas waktunya — bukan nama, bukan data siswa.
+// Data tetap diambil dari server setiap kali aplikasi dibuka, dan server tetap
+// memeriksa tokennya (sesi yang sudah keluar atau berakhir ditolak).
+//
+// Di komputer bersama (ruang guru, lab), centang "Tetap masuk" di layar login
+// sebaiknya dimatikan — atau selalu tekan Keluar sesudah selesai. Keluar
+// menghapus token ini dari perangkat.
+const KUNCI_SESI_PERANGKAT = 'sikap_sesi';
+const LAMA_SESI_PERANGKAT_MS = 5 * 60 * 60 * 1000;
+
+function alamatServer_() { return typeof GAS_URL !== 'undefined' ? String(GAS_URL) : ''; }
+
+function simpanSesiPerangkat() {
+  // Centang dimatikan → token lama (mungkin milik orang lain) ikut dibuang
+  if (!AppState.token || AppState.ingatPerangkat === false) return lupakanSesiPerangkat();
+  try {
+    localStorage.setItem(KUNCI_SESI_PERANGKAT, JSON.stringify({
+      t: AppState.token, s: Date.now() + LAMA_SESI_PERANGKAT_MS, u: alamatServer_(),
+      p: (AppState.profil && AppState.profil.peran) || ''
+    }));
+  } catch (e) { /* penyimpanan diblokir (mode penyamaran) — cukup login seperti biasa */ }
+}
+
+/** Token yang masih berlaku untuk sekolah ini, atau null */
+function bacaSesiPerangkat() {
+  try {
+    const d = JSON.parse(localStorage.getItem(KUNCI_SESI_PERANGKAT) || 'null');
+    if (!d || !d.t || !d.s) return null;
+    // Kedaluwarsa, atau milik sekolah lain (satu situs bisa melayani banyak sekolah)
+    if (Date.now() > Number(d.s) || d.u !== alamatServer_()) { lupakanSesiPerangkat(); return null; }
+    return d;
+  } catch (e) { return null; }
+}
+
+function lupakanSesiPerangkat() {
+  try { localStorage.removeItem(KUNCI_SESI_PERANGKAT); } catch (e) {}
+}
+
+/**
+ * Bawaan centang "Tetap masuk": menyala di HP/tablet (perangkat pribadi), MATI
+ * di komputer (sering dipakai bergantian di ruang guru). Pilihan terakhir di
+ * perangkat ini diingat — guru yang mencentangnya di laptop sendiri cukup sekali.
+ */
+const KUNCI_PILIHAN_INGAT = 'sikap_ingat';
+function bawaanIngatPerangkat() {
+  try {
+    const v = localStorage.getItem(KUNCI_PILIHAN_INGAT);
+    if (v === '1') return true;
+    if (v === '0') return false;
+  } catch (e) {}
+  return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+function ingatPilihanIngat(nyala) {
+  try { localStorage.setItem(KUNCI_PILIHAN_INGAT, nyala ? '1' : '0'); } catch (e) {}
+}
+
+/** Centang "Tetap masuk" di layar login — disisipkan dari sini agar index.html tak perlu diubah */
+function pasangCentangIngat() {
+  const tombol = document.getElementById('tombolLogin');
+  if (!tombol || document.getElementById('ingatPerangkat')) return;
+  const kotak = document.createElement('div');
+  kotak.className = 'form-check mb-3 ingat-perangkat';
+  kotak.innerHTML =
+    '<input class="form-check-input" type="checkbox" id="ingatPerangkat"' + (bawaanIngatPerangkat() ? ' checked' : '') + '>' +
+    '<label class="form-check-label" for="ingatPerangkat">Tetap masuk di perangkat ini selama 5 jam' +
+      '<span class="form-text d-block mt-0">Matikan bila memakai komputer bersama.</span></label>';
+  tombol.parentNode.insertBefore(kotak, tombol);
+}
+
+/**
+ * Saat halaman dibuka: bila ada sesi tersimpan, langsung masuk tanpa layar login.
+ * @param {function} lanjutLogin  dipanggil bila sesi tidak bisa dipulihkan
+ */
+function pulihkanSesiPerangkat(lanjutLogin) {
+  const d = bacaSesiPerangkat();
+  if (!d) return lanjutLogin();
+  // Link login siswa (?peran=siswa) dibuka di perangkat yang menyimpan sesi
+  // guru → JANGAN buka sesi guru itu; tampilkan login siswa.
+  let peranAlamat = '';
+  try { peranAlamat = new URLSearchParams(window.location.search).get('peran') || ''; } catch (e) {}
+  if (peranAlamat && d.p && peranAlamat !== d.p) return lanjutLogin();
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      const ok = res && res.success && res.data && res.data.bootstrap && res.data.profil &&
+                 res.data.profil.sandiBawaan !== true;
+      if (!ok) {
+        // Hanya sesi yang dinyatakan TIDAK SAH yang dibuang. Gangguan sesaat
+        // di server: token disimpan untuk percobaan berikutnya.
+        if (!res || res.sesiTidakSah === true) lupakanSesiPerangkat();
+        return lanjutLogin();
+      }
+      try {
+        AppState.token = d.t;
+        AppState.profil = res.data.profil;
+        bukaAplikasi(res.data.bootstrap, res.message, true);
+        sembunyikanOverlayMuat();
+      } catch (e) {
+        // Apa pun yang gagal saat membuka: jangan tinggalkan layar muat menggantung
+        console.error('[SIKAP BK] memulihkan sesi:', e);
+        lupakanSesiPerangkat();
+        AppState.token = null; AppState.profil = null;
+        document.getElementById('layarAplikasi').style.display = 'none';
+        lanjutLogin();
+      }
+    })
+    .withFailureHandler(function () {
+      // Server tak terjangkau: token TIDAK dibuang (mungkin hanya sinyal) —
+      // tampilkan layar login seperti biasa; percobaan berikutnya memakainya lagi.
+      lanjutLogin();
+    })
+    .lanjutkanSesi(d.t);
 }
 
 /**
@@ -417,11 +565,11 @@ function tutupSambutan() {
  * terbuka dan tidak boleh terganggu. Isinya diambil server dari sesi, bukan
  * dari sini — aplikasi hanya menyerahkan token.
  */
-function catatMasukDiamDiam() {
+function catatMasukDiamDiam(jenis) {
   try {
     google.script.run
       .withFailureHandler(function () { /* log gagal — bukan urusan pengguna */ })
-      .catatMasuk(AppState.token);
+      .catatMasuk(AppState.token, jenis || '');
   } catch (e) { /* diabaikan dengan sengaja */ }
 }
 
@@ -642,6 +790,8 @@ function tanganiLogout() {
     AppState.pengaduan = []; AppState.catatanPengaduan = [];
     AppState.pilihSiswa = []; AppState.siswaTampil = []; AppState.detailNisn = null;
     AppState.sedangDisimpan = {}; AppState.segarkanTertunda = false;
+    lupakanSesiPerangkat();                               // v3.7: perangkat ini lupa sesinya
+    lupakanSemuaPdf();                                    // v3.7: dokumen PDF dilepas dari memori
     tutupLembarLainnya();
     document.body.classList.remove('ada-nav-bawah', 'ketik-hp');
     lupakanPreferensi();
@@ -1244,15 +1394,96 @@ function bukaModalForm(judul, isiHtml, onSimpan, labelSimpan) {
 function pratinjau(url, nama, tipe) {
   document.getElementById('judulPratinjau').textContent = nama || 'Pratinjau Dokumen';
   const isi = document.getElementById('isiPratinjau');
+  const lokal = /^blob:/.test(String(url));          // PDF buatan aplikasi (v3.7), sudah di memori
   if (tipe === 'gambar') {
     isi.innerHTML = imgDrive(url, nama, 'max-width:100%;height:auto;border-radius:var(--r-md)');
+  } else if (lokal) {
+    isi.innerHTML = tampilanPdf({ url: url, nama: nama });
   } else {
     isi.innerHTML = '<iframe src="' + escHtml(url) + '" class="bingkai-pdf"></iframe>';
   }
-  document.getElementById('tombolUnduhPratinjau').onclick = function () {
-    toast('Unduh', 'Gunakan tombol unduh di dalam pratinjau dokumen.', 'peringatan');
-  };
-  new bootstrap.Modal(document.getElementById('modalPratinjau')).show();
+  document.getElementById('tombolUnduhPratinjau').onclick = lokal
+    ? function () { unduhUrl(url, nama); }
+    : function () { toast('Unduh', 'Gunakan tombol unduh di dalam pratinjau dokumen.', 'peringatan'); };
+  const M = bootstrap.Modal, el = document.getElementById('modalPratinjau');
+  (typeof M.getOrCreateInstance === 'function' ? M.getOrCreateInstance(el) : new M(el)).show();
+}
+
+// ── PDF LANGSUNG DARI MEMORI (v3.7) ────────────────────────────────────
+//
+// Server mengirim isi PDF-nya langsung. Dulu PDF disimpan dulu ke Drive lalu
+// dibuka lewat penampil Google Drive — lambat, apalagi di HP. Sekarang:
+//   • laptop: PDF tampil di halaman memakai penampil PDF bawaan peramban
+//   • HP/tablet: tombol "Buka PDF" (penampil PDF HP) dan "Unduh"
+// Isinya disimpan sebagai berkas sementara di memori (blob), BUKAN sebagai teks
+// raksasa di dalam tombol — halaman tetap ringan walau dokumennya tebal.
+
+// Tombol memakai NOMOR dokumen (unduhPdf(3)), bukan nama/alamatnya — nama
+// kelas seperti "7 Mu'adz" tidak bisa merusak tombolnya.
+const _pdf = {}; const _urutPdf = []; let _pdfKe = 0;
+/** base64 → { id, url, nama, ukuran } — 30 dokumen terakhir disimpan selama sesi */
+function pdfDariBase64(base64, nama) {
+  const biner = atob(base64);
+  const arr = new Uint8Array(biner.length);
+  for (let i = 0; i < biner.length; i++) arr[i] = biner.charCodeAt(i);
+  const blob = new Blob([arr], { type: 'application/pdf' });
+  const id = ++_pdfKe;
+  const url = URL.createObjectURL(blob);
+  _pdf[id] = { url: url, nama: nama, ukuran: blob.size };
+  _urutPdf.push(id);
+  while (_urutPdf.length > 30) {
+    const lama = _urutPdf.shift();
+    try { URL.revokeObjectURL(_pdf[lama].url); } catch (e) {}
+    delete _pdf[lama];
+  }
+  return { id: id, url: url, nama: nama, ukuran: blob.size };
+}
+function unduhPdf(id) {
+  const b = _pdf[id];
+  if (!b) return toast('Tidak tersedia', 'Dokumen itu sudah tidak tersimpan. Silakan buat ulang.', 'peringatan');
+  unduhUrl(b.url, b.nama);
+}
+function bukaPdf(id) {
+  const b = _pdf[id];
+  if (!b) return toast('Tidak tersedia', 'Dokumen itu sudah tidak tersimpan. Silakan buat ulang.', 'peringatan');
+  pratinjau(b.url, b.nama, 'pdf');
+}
+/** Saat keluar: semua dokumen dilepas dari memori */
+function lupakanSemuaPdf() {
+  _urutPdf.splice(0).forEach(function (id) { try { URL.revokeObjectURL(_pdf[id].url); } catch (e) {} delete _pdf[id]; });
+  ['isiPratinjau', 'wadahPratinjauLaporan', 'aksiPratinjauLaporan', 'riwayatUnduhan', 'srtHasil'].forEach(function (id) {
+    const el = document.getElementById(id); if (el) el.innerHTML = '';
+  });
+}
+
+/** Perangkat sentuh (HP/tablet): PDF di dalam halaman tidak selalu bisa ditampilkan */
+function perangkatSentuh() {
+  return layarHP() || !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+
+function tampilanPdf(berkas) {
+  const nama = escHtml(berkas.nama || 'dokumen.pdf');
+  if (!perangkatSentuh()) {
+    return '<iframe src="' + escHtml(berkas.url) + '" class="bingkai-pdf" title="' + nama + '"></iframe>';
+  }
+  const kb = berkas.ukuran ? ' • ' + Math.max(1, Math.round(berkas.ukuran / 1024)) + ' KB' : '';
+  return '<div class="kartu-pdf-hp">' +
+    '<div class="ikon"><i class="bi bi-file-earmark-pdf-fill"></i></div>' +
+    '<div class="nama mono">' + nama + '</div>' +
+    '<div class="ket">Dokumen siap' + kb + '</div>' +
+    '<div class="d-flex gap-2 w-100 mt-2">' +
+      '<a class="btn btn-navy flex-fill" href="' + escHtml(berkas.url) + '" target="_blank" rel="noopener">' +
+        '<i class="bi bi-box-arrow-up-right"></i> Buka PDF</a>' +
+      '<a class="btn btn-gold flex-fill" href="' + escHtml(berkas.url) + '" download="' + nama + '">' +
+        '<i class="bi bi-download"></i> Unduh</a>' +
+    '</div></div>';
+}
+
+function unduhUrl(url, nama) {
+  const a = document.createElement('a');
+  a.href = url; a.download = nama || 'dokumen.pdf';
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { a.remove(); }, 500);
 }
 
 /** Unduh file dari base64 tanpa membuka tab baru */
@@ -1761,8 +1992,10 @@ function renderInputPoin() {
           // ── Pemilih siswa: cari, klik, bisa lebih dari satu ──
           '<div class="mb-3" id="blokPilihSiswa">' +
             '<label class="form-label" for="poinCariSiswa">Pilih Siswa <span class="wajib">*</span></label>' +
+            // Di HP (di bawah 576 px) pilihan kelas + tombol Semua tampil DI ATAS kolom
+            // nama (v3.7): pilih kelas dulu, lalu ketik nama atau tekan Semua.
             '<div class="row g-2 mb-1">' +
-              '<div class="col-12 col-sm-7"><div class="pemilih-siswa">' +
+              '<div class="col-12 col-sm-7 order-last order-sm-0"><div class="pemilih-siswa">' +
                 '<div class="kotak-cari">' +
                   '<i class="bi bi-search"></i>' +
                   '<input class="form-control" id="poinCariSiswa" autocomplete="off" ' +
@@ -1857,11 +2090,15 @@ function renderInputPoin() {
 
           '<div class="mb-4">' +
             '<label class="form-label">Unggah Bukti Foto Kejadian <span class="text-secondary-2">(opsional)</span></label>' +
-            '<div class="area-unggah" onclick="document.getElementById(\'poinFoto\').click()">' +
+            // HP/tablet: langsung buka kamera, atau pilih dari galeri (v3.7)
+            tombolAmbilFoto('poinFotoKamera', 'poinFoto') +
+            // Laptop: kotak klik seperti biasa
+            '<div class="area-unggah hanya-tetikus" onclick="document.getElementById(\'poinFoto\').click()">' +
               '<div class="ikon-besar"><i class="bi bi-camera-fill"></i></div>' +
               '<div style="font-weight:600;color:var(--text-primary)">Klik untuk mengunggah foto bukti</div>' +
-              '<div style="font-size:12px">Format JPG atau PNG, maksimal 5 MB</div>' +
+              '<div style="font-size:12px">Format JPG atau PNG — otomatis diperkecil sebelum diunggah</div>' +
             '</div>' +
+            '<input type="file" id="poinFotoKamera" accept="image/*" capture="environment" style="display:none" onchange="pilihFotoBukti(this)">' +
             '<input type="file" id="poinFoto" accept="image/*" style="display:none" onchange="pilihFotoBukti(this)">' +
             '<div id="pratinjauFoto" class="mt-3"></div>' +
           '</div>' +
@@ -2092,9 +2329,7 @@ function renderSiswaTerpilih() {
   const d = AppState.draftPoin;
 
   if (!d.nisnTerpilih.length) {
-    wadah.innerHTML = '<div class="kotak-info"><i class="bi bi-info-circle"></i><div>' +
-      'Belum ada siswa dipilih. Ketik nama pada kolom di atas, atau pilih kelas lalu tekan ' +
-      '<b>Semua</b> untuk menambahkan satu kelas sekaligus.</div></div>';
+    wadah.innerHTML = '';          // v3.7: kotak petunjuk dihapus atas permintaan sekolah
     return;
   }
 
@@ -2291,11 +2526,36 @@ function hitungDampakPoin() {
   '</div>';
 }
 
+/**
+ * Dua tombol untuk layar sentuh: "Ambil Foto" membuka kamera belakang HP
+ * langsung (atribut capture), "Galeri" membuka foto yang sudah ada (v3.7).
+ */
+function tombolAmbilFoto(idKamera, idGaleri) {
+  return '<div class="pilih-foto hanya-sentuh">' +
+    '<button type="button" class="btn btn-gold" onclick="document.getElementById(\'' + idKamera + '\').click()">' +
+      '<i class="bi bi-camera-fill"></i> Ambil Foto</button>' +
+    '<button type="button" class="btn btn-hantu" onclick="document.getElementById(\'' + idGaleri + '\').click()">' +
+      '<i class="bi bi-images"></i> Pilih dari Galeri</button>' +
+  '</div>';
+}
+
+/**
+ * Foto dari kamera HP sering 3–8 MB. Karena SEMUA foto diperkecil di peramban
+ * (maks. 1280 px, ± 200 KB) sebelum dikirim, batas ukuran berkas asli cukup
+ * longgar — yang dijaga hanya berkas yang jelas bukan foto biasa.
+ */
+const BATAS_FOTO_ASLI = 25 * 1024 * 1024;
+/** Jenis lain (GIF, HEIC, dsb.) dikirim apa adanya tanpa diperkecil — tetap dibatasi 5 MB */
+function fotoTerlaluBesar(file) {
+  const diperkecil = /^image\/(png|jpe?g|webp)$/i.test(file.type);
+  return file.size > (diperkecil ? BATAS_FOTO_ASLI : 5 * 1024 * 1024);
+}
+
 function pilihFotoBukti(input) {
   const file = input.files[0];
   if (!file) return;
-  if (file.size > 5 * 1024 * 1024) {
-    toast('Ukuran terlalu besar', 'Maksimal ukuran foto adalah 5 MB.', 'peringatan');
+  if (fotoTerlaluBesar(file)) {
+    toast('Ukuran terlalu besar', 'Foto JPG/PNG maksimal 25 MB; jenis lain maksimal 5 MB.', 'peringatan');
     input.value = ''; return;
   }
   // Foto bukti diperkecil maksimal 1280 px agar unggahan cepat meski dari kamera HP
@@ -2321,7 +2581,7 @@ function tampilPratinjauFoto(dataUrl, nama) {
 
 function hapusFotoBukti() {
   AppState.draftPoin.foto = null;
-  const inp = document.getElementById('poinFoto'); if (inp) inp.value = '';
+  ['poinFoto', 'poinFotoKamera'].forEach(function (id) { const inp = document.getElementById(id); if (inp) inp.value = ''; });
   const el = document.getElementById('pratinjauFoto'); if (el) el.innerHTML = '';
 }
 
@@ -2574,7 +2834,9 @@ function renderDataSiswa() {
       '</p>' +
     '</div>' +
     '<div class="aksi">' +
-      (bolehEdit ? '<button class="btn btn-hantu" onclick="bukaImport(\'siswa\')"><i class="bi bi-upload"></i> Import Excel</button>' +
+      (bolehEdit ? '<button class="btn btn-hantu" onclick="bukaQRLoginSiswa()" title="QR code link login siswa">' +
+                     '<i class="bi bi-qr-code"></i> QR Login</button>' +
+                   '<button class="btn btn-hantu" onclick="bukaImport(\'siswa\')"><i class="bi bi-upload"></i> Import Excel</button>' +
                    '<button class="btn btn-navy" onclick="bukaFormSiswa()"><i class="bi bi-person-plus"></i> Tambah Siswa</button>' : '') +
     '</div>' +
   '</div>' +
@@ -3558,8 +3820,8 @@ function renderFotoEditRiwayat() {
 function pilihFotoRiwayat(input) {
   const file = input.files[0];
   if (!file) return;
-  if (file.size > 5 * 1024 * 1024) {
-    toast('Ukuran terlalu besar', 'Maksimal ukuran foto adalah 5 MB.', 'peringatan');
+  if (fotoTerlaluBesar(file)) {
+    toast('Ukuran terlalu besar', 'Foto JPG/PNG maksimal 25 MB; jenis lain maksimal 5 MB.', 'peringatan');
     input.value = ''; return;
   }
   // Sama seperti input poin: diperkecil maksimal 1280 px agar unggahan tetap cepat
@@ -3579,7 +3841,7 @@ function tandaiHapusFotoRiwayat() {
   if (!AppState.fotoRiwayat) return;
   AppState.fotoRiwayat.baru = null;
   AppState.fotoRiwayat.hapus = true;
-  const inp = document.getElementById('fRwFoto'); if (inp) inp.value = '';
+  ['fRwFoto', 'fRwFotoKamera'].forEach(function (id) { const inp = document.getElementById(id); if (inp) inp.value = ''; });
   renderFotoEditRiwayat();
 }
 
@@ -3587,7 +3849,7 @@ function batalFotoEditRiwayat() {
   if (!AppState.fotoRiwayat) return;
   AppState.fotoRiwayat.baru = null;
   AppState.fotoRiwayat.hapus = false;
-  const inp = document.getElementById('fRwFoto'); if (inp) inp.value = '';
+  ['fRwFoto', 'fRwFotoKamera'].forEach(function (id) { const inp = document.getElementById(id); if (inp) inp.value = ''; });
   renderFotoEditRiwayat();
 }
 
@@ -3614,8 +3876,10 @@ function bukaEditRiwayat(id) {
       '<textarea class="form-control" id="fRwCatatan">' + escHtml(r.Catatan || '') + '</textarea></div>' +
     '<div class="mb-3"><label class="form-label">Bukti Foto Kejadian</label>' +
       '<div id="kotakFotoRiwayat"></div>' +
-      '<input type="file" class="form-control mt-2" id="fRwFoto" accept="image/*" onchange="pilihFotoRiwayat(this)">' +
-      '<div class="form-text">Maksimal 5 MB. Foto otomatis diperkecil sebelum diunggah. ' +
+      '<div class="mt-2">' + tombolAmbilFoto('fRwFotoKamera', 'fRwFoto') + '</div>' +
+      '<input type="file" class="form-control mt-2 hanya-tetikus" id="fRwFoto" accept="image/*" onchange="pilihFotoRiwayat(this)">' +
+      '<input type="file" id="fRwFotoKamera" accept="image/*" capture="environment" style="display:none" onchange="pilihFotoRiwayat(this)">' +
+      '<div class="form-text">Foto otomatis diperkecil sebelum diunggah. ' +
       'Mengunggah foto baru akan menggantikan foto lama.</div></div>' +
     '<div class="kotak-info peringatan"><i class="bi bi-exclamation-triangle"></i><div>' +
       (catatanArsip(r)
@@ -5144,8 +5408,10 @@ function cetakLaporan() {
     sertakanCatatan: document.getElementById('lapCatatan').checked
   };
 
+  const tokenKirim = AppState.token;
   google.script.run
     .withSuccessHandler(function (res) {
+      if (AppState.token !== tokenKirim) return;      // sudah keluar — dokumen tidak ditampilkan
       btn.innerHTML = asli; btn.disabled = false;
       if (!res.success) {
         document.getElementById('wadahPratinjauLaporan').innerHTML =
@@ -5153,17 +5419,18 @@ function cetakLaporan() {
         return toast('Gagal', res.message, 'bahaya');
       }
       const d = res.data;
-      document.getElementById('wadahPratinjauLaporan').innerHTML =
-        '<iframe src="' + escHtml(d.urlPreview) + '" class="bingkai-pdf"></iframe>';
+      const berkas = pdfDariBase64(d.base64, d.nama);
+      const jsUnduh = 'unduhPdf(' + berkas.id + ')';
+      document.getElementById('wadahPratinjauLaporan').innerHTML = tampilanPdf(berkas);
       document.getElementById('aksiPratinjauLaporan').innerHTML =
-        '<button class="btn btn-gold btn-kecil" onclick="unduhBase64(\'' + d.base64 + '\',\'' + escHtml(d.nama) + '\',\'application/pdf\')">' +
+        '<button class="btn btn-gold btn-kecil" onclick="' + jsUnduh + '">' +
         '<i class="bi bi-download"></i> Unduh PDF</button>';
 
       const wadah = document.getElementById('riwayatUnduhan');
       const kartu = '<div class="kartu-unduhan"><div class="ikon"><i class="bi bi-file-earmark-pdf-fill"></i></div>' +
         '<div class="teks"><strong>' + escHtml(d.nama) + '</strong>' +
         '<span>Dibuat ' + new Date().toLocaleTimeString('id-ID') + '</span></div>' +
-        '<button class="btn btn-hantu btn-mini ms-auto" onclick="unduhBase64(\'' + d.base64 + '\',\'' + escHtml(d.nama) + '\',\'application/pdf\')">' +
+        '<button class="btn btn-hantu btn-mini ms-auto" onclick="' + jsUnduh + '" aria-label="Unduh ' + escHtml(d.nama) + '">' +
         '<i class="bi bi-download"></i></button></div>';
       if (wadah.querySelector('.kosong')) wadah.innerHTML = kartu; else wadah.insertAdjacentHTML('afterbegin', kartu);
 
@@ -5857,15 +6124,17 @@ function konfirmasiHapusPengaduan(id) {
 function cetakPendampingan(id, ev) {
   if (masihSementara(id)) return tungguSimpan();
   const pulih = tombolSibuk(ev && ev.currentTarget, '');
+  const tokenKirim = AppState.token;
   tandaSinkron(true);
   google.script.run
     .withSuccessHandler(function (res) {
+      if (AppState.token !== tokenKirim) return;      // catatan rahasia: jangan tampil sesudah keluar
       pulih(); tandaSinkron(false);
       if (!res.success) return toast('Gagal', res.message, 'bahaya');
-      pratinjau(res.data.urlPreview, res.data.nama, 'pdf');
+      bukaPdf(pdfDariBase64(res.data.base64, res.data.nama).id);
       toast('Laporan siap', res.data.nama, 'sukses');
     })
-    .withFailureHandler(function (err) { pulih(); tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
+    .withFailureHandler(function (err) { if (AppState.token !== tokenKirim) return; pulih(); tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
     .buatLaporanPendampinganPDF(AppState.token, { id: id });
 }
 
@@ -7109,6 +7378,7 @@ function cetakSurat(modal) {
     '<div class="kotak-info"><span class="spinner-inline" style="border-color:var(--navy-soft);border-top-color:var(--navy)"></span>' +
     '<div>Menyiapkan ' + (kolektif ? '1 surat kolektif' : F.nisnTerpilih.length + ' surat') + '…</div></div>';
 
+  const tokenKirim = AppState.token;
   google.script.run
     .withSuccessHandler(function (res) {
       btn.innerHTML = asli; btn.disabled = false;
@@ -7118,15 +7388,17 @@ function cetakSurat(modal) {
         return toast('Gagal', res.message, 'bahaya');
       }
       const d = res.data;
+      if (AppState.token !== tokenKirim) return;
+      const berkas = pdfDariBase64(d.base64, d.nama);
       document.getElementById('srtHasil').innerHTML =
         '<div class="kartu-unduhan"><div class="ikon"><i class="bi bi-file-earmark-pdf-fill"></i></div>' +
           '<div class="teks"><strong>' + escHtml(d.nama) + '</strong><span>Surat siap diunduh</span></div>' +
         '</div>' +
         '<div class="d-flex gap-2 mt-2">' +
-          '<button class="btn btn-gold flex-fill" onclick="unduhBase64(\'' + d.base64 + '\',\'' + escHtml(d.nama) + '\',\'application/pdf\')">' +
+          '<button class="btn btn-gold flex-fill" onclick="unduhPdf(' + berkas.id + ')">' +
             '<i class="bi bi-download"></i> Unduh PDF</button>' +
-          '<button class="btn btn-hantu" onclick="pratinjau(\'' + escHtml(d.urlPreview) + '\',\'' + escHtml(d.nama) + '\',\'pdf\')">' +
-            '<i class="bi bi-eye"></i> Pratinjau</button>' +
+          '<button class="btn btn-hantu" onclick="bukaPdf(' + berkas.id + ')">' +
+            '<i class="bi bi-eye"></i> ' + (perangkatSentuh() ? 'Buka' : 'Pratinjau') + '</button>' +
         '</div>';
       toast('Surat siap', d.nama, 'sukses');
     })
@@ -7187,6 +7459,19 @@ function renderPengaturan() {
       '</div></div>' +
 
     '<div class="tumpuk">' +
+      // v3.7 — bagikan link login siswa lewat QR code
+      '<div class="card"><div class="card-header"><div><h5><i class="bi bi-qr-code"></i> Link Login Siswa</h5>' +
+        '<p class="sub">Siswa memindai QR, halaman login langsung terbuka di pilihan Siswa</p></div></div>' +
+        '<div class="card-body">' +
+          '<div class="kotak-cari mb-2"><i class="bi bi-link-45deg"></i>' +
+            '<input class="form-control mono" id="setLinkSiswa" readonly value="' + escHtml(alamatLoginSiswa()) + '" ' +
+              'onclick="this.select()" aria-label="Link login siswa"></div>' +
+          '<div class="d-flex gap-2">' +
+            '<button class="btn btn-navy flex-fill" onclick="bukaQRLoginSiswa()"><i class="bi bi-qr-code"></i> Tampilkan QR Code</button>' +
+            '<button class="btn btn-hantu" onclick="salinLinkSiswa()"><i class="bi bi-copy"></i> Salin</button>' +
+          '</div>' +
+        '</div></div>' +
+
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-sliders"></i> Ambang Zona &amp; Poin</h5>' +
         '<p class="sub">Menentukan klasifikasi warna status siswa</p></div></div>' +
         '<div class="card-body">' +
@@ -7597,6 +7882,209 @@ function pulihkanSusunanKop() {
 function simpanSusunanKop() {
   simpanPengaturanKe({ kopSusunan: JSON.stringify(AppState.kopSusunan) },
     'Pengaturan kop surat disimpan.');
+}
+
+// ── QR CODE LOGIN SISWA (v3.7) ─────────────────────────────────────────
+//
+// Link login siswa = alamat situs + ?peran=siswa, sehingga halaman login
+// langsung terbuka di tab Siswa. Kode sekolah (?s=…) ikut dibawa bila ada.
+// Pustaka QR (MIT, Kazuhiko Arase) disimpan di js/qrcode.js dan baru dimuat
+// saat Admin membuka jendela ini — tidak memperlambat halaman lain.
+
+function alamatLoginSiswa() {
+  try {
+    const u = new URL(window.location.href);
+    const p = new URLSearchParams();
+    // Kode sekolah selalu dibawa bila situs melayani banyak sekolah — poster yang
+    // sudah dicetak tetap benar walau sekolah bawaan situs kelak berganti.
+    const s = (typeof KODE_SEKOLAH !== 'undefined' && KODE_SEKOLAH) || u.searchParams.get('s') || u.searchParams.get('sekolah');
+    if (s) p.set('s', s);
+    p.set('peran', 'siswa');
+    return u.origin + u.pathname.replace(/index\.html$/i, '') + '?' + p.toString();
+  } catch (e) { return String(window.location.href).split('?')[0] + '?peran=siswa'; }
+}
+
+const _pustakaDimuat = {};
+/** Muat skrip sekali saja; resolve bila cek() terpenuhi */
+function muatPustaka(src, cek) {
+  if (cek()) return Promise.resolve();
+  if (!_pustakaDimuat[src]) {
+    _pustakaDimuat[src] = new Promise(function (ok, gagal) {
+      const sc = document.createElement('script');
+      sc.src = src; sc.async = true;
+      sc.onload = function () { cek() ? ok() : gagal(new Error('Pustaka tidak lengkap.')); };
+      sc.onerror = function () { delete _pustakaDimuat[src]; gagal(new Error('Pustaka QR tidak dapat dimuat. Periksa koneksi internet.')); };
+      document.head.appendChild(sc);
+    });
+  }
+  return _pustakaDimuat[src];
+}
+
+/** Kanvas berisi kode QR saja (latar putih, tepi aman 4 modul) */
+function kanvasQR(teks, piksel) {
+  const qr = qrcode(0, 'M');
+  qr.addData(teks);
+  qr.make();
+  const n = qr.getModuleCount(), tepi = 4;
+  const m = Math.max(1, Math.floor(piksel / (n + tepi * 2)));
+  const sisi = (n + tepi * 2) * m;
+  const c = document.createElement('canvas');
+  c.width = c.height = sisi;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, sisi, sisi);
+  g.fillStyle = '#0b1b33';
+  for (let r = 0; r < n; r++) {
+    for (let k = 0; k < n; k++) if (qr.isDark(r, k)) g.fillRect((k + tepi) * m, (r + tepi) * m, m, m);
+  }
+  return c;
+}
+
+/** Bungkus teks pada lebar tertentu; kembalikan daftar baris */
+function bungkusTeks(g, teks, lebar) {
+  const kata = String(teks).split(/\s+/), baris = [];
+  let skr = '';
+  kata.forEach(function (k) {
+    const coba = skr ? skr + ' ' + k : k;
+    if (g.measureText(coba).width > lebar && skr) { baris.push(skr); skr = k; } else skr = coba;
+  });
+  if (skr) baris.push(skr);
+  return baris;
+}
+
+/** Poster 1080×1350 (pas untuk WhatsApp & dicetak): nama sekolah, QR, langkah login, link */
+function kanvasPosterQR(link) {
+  const W = 1080, H = 1350, NAVY = '#1e3a5f', EMAS = '#f5a623';
+  const huruf = function (berat, uk) { return berat + ' ' + uk + 'px Inter, "Segoe UI", Roboto, Arial, sans-serif'; };
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+
+  // Pita atas: nama aplikasi & sekolah
+  g.fillStyle = NAVY; g.fillRect(0, 0, W, 230);
+  g.fillStyle = EMAS; g.fillRect(0, 230, W, 10);
+  g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  g.fillStyle = 'rgba(255,255,255,.75)'; g.font = huruf(600, 30);
+  g.fillText('SIKAP BK', W / 2, 78);
+  g.fillStyle = '#ffffff'; g.font = huruf(700, 50);
+  const sekolah = bungkusTeks(g, (AppState.konfigurasi && AppState.konfigurasi.namaSekolah) || 'Sekolah', W - 120).slice(0, 2);
+  sekolah.forEach(function (b, i) { g.fillText(b, W / 2, (sekolah.length === 1 ? 160 : 140) + i * 58); });
+
+  // Judul
+  g.fillStyle = NAVY; g.font = huruf(700, 64);
+  g.fillText('Login Siswa', W / 2, 335);
+  g.fillStyle = '#5b6b80'; g.font = huruf(500, 30);
+  g.fillText('Pindai kode QR ini dengan kamera HP', W / 2, 385);
+
+  // QR dalam bingkai emas
+  const qr = kanvasQR(link, 560);
+  const x = (W - qr.width) / 2, y = 425;
+  g.fillStyle = EMAS;
+  const r = 28, bx = x - 22, by = y - 22, bw = qr.width + 44, bh = qr.height + 44;
+  g.beginPath(); g.moveTo(bx + r, by); g.arcTo(bx + bw, by, bx + bw, by + bh, r); g.arcTo(bx + bw, by + bh, bx, by + bh, r);
+  g.arcTo(bx, by + bh, bx, by, r); g.arcTo(bx, by, bx + bw, by, r); g.closePath(); g.fill();
+  g.drawImage(qr, x, y);
+
+  // Langkah
+  const atas = y + qr.height + 90;
+  g.textAlign = 'left'; g.fillStyle = '#0f172a'; g.font = huruf(600, 34);
+  const langkah = ['1.  Pindai kode QR', '2.  Ketik NISN', '3.  Ketik tanggal lahir (dd-mm-yyyy)'];
+  const lebarMaks = Math.max.apply(null, langkah.map(function (t) { return g.measureText(t).width; }));
+  langkah.forEach(function (t, i) { g.fillText(t, (W - lebarMaks) / 2, atas + i * 52); });
+
+  // Link (cadangan bila QR tak bisa dipindai)
+  g.textAlign = 'center'; g.fillStyle = '#5b6b80'; g.font = '500 26px "JetBrains Mono", Consolas, monospace';
+  g.fillText(link.replace(/^https?:\/\//, ''), W / 2, H - 50);
+  return c;
+}
+
+function bukaQRLoginSiswa() {
+  const link = alamatLoginSiswa();
+  const bisaBagikan = typeof navigator.share === 'function';
+  bukaModalForm('QR Code Login Siswa',
+    '<div class="qr-poster" id="wadahPosterQR"><div class="kosong"><div class="spinner-ring mx-auto mb-2"></div>' +
+      '<p class="mb-0">Menyiapkan QR code…</p></div></div>' +
+    '<div class="kotak-cari mt-3"><i class="bi bi-link-45deg"></i>' +
+      '<input class="form-control mono" readonly value="' + escHtml(link) + '" onclick="this.select()" aria-label="Link login siswa"></div>' +
+    '<div class="d-flex gap-2 mt-2">' +
+      '<button type="button" class="btn btn-hantu flex-fill" onclick="salinLinkSiswa()"><i class="bi bi-copy"></i> Salin Link</button>' +
+      (bisaBagikan ? '<button type="button" class="btn btn-hantu flex-fill" onclick="bagikanQRLoginSiswa()"><i class="bi bi-share"></i> Bagikan</button>' : '') +
+    '</div>' +
+    '<div class="form-text mt-2">Tempel di kelas, kirim ke grup WhatsApp kelas, atau tampilkan di layar. ' +
+      'Siswa masuk dengan <b>NISN</b> dan <b>tanggal lahir</b>.</div>',
+    function () { unduhPosterQR(); }, 'Unduh Gambar');
+  const btn = document.getElementById('tombolSimpanModal');
+  if (btn) btn.innerHTML = '<i class="bi bi-download"></i> Unduh Gambar';
+
+  const siapkan = (document.fonts && document.fonts.load)
+    ? Promise.all([document.fonts.load('700 50px Inter'), document.fonts.load('600 34px Inter'),
+                   document.fonts.load('500 26px "JetBrains Mono"')]).catch(function () {})
+    : Promise.resolve();
+  Promise.all([muatPustaka('js/qrcode.js', function () { return typeof qrcode === 'function'; }), siapkan])
+    .then(function () {
+      const poster = kanvasPosterQR(link);
+      AppState.posterQR = poster;
+      // Berkas gambar disiapkan SEKARANG: menu Bagikan di HP (terutama iPhone)
+      // hanya mau dibuka langsung dari ketukan, tanpa menunggu proses lain.
+      AppState.berkasQR = null;
+      if (poster.toBlob && typeof File === 'function') {
+        poster.toBlob(function (b) { if (b) AppState.berkasQR = new File([b], namaBerkasQR(), { type: 'image/png' }); }, 'image/png');
+      }
+      const w = document.getElementById('wadahPosterQR');
+      if (w) w.innerHTML = '<img src="' + poster.toDataURL('image/png') + '" alt="Poster QR code login siswa">';
+    })
+    .catch(function (e) {
+      const w = document.getElementById('wadahPosterQR');
+      if (w) w.innerHTML = '<div class="kotak-info bahaya"><i class="bi bi-x-octagon"></i><div>' + escHtml(e.message) + '</div></div>';
+    });
+}
+
+function namaBerkasQR() {
+  const s = String((AppState.konfigurasi && AppState.konfigurasi.namaSekolah) || 'Sekolah').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  return 'QR_Login_Siswa_' + s + '.png';
+}
+
+function unduhPosterQR() {
+  const c = AppState.posterQR;
+  if (!c) return toast('Sebentar', 'QR code masih disiapkan.', 'peringatan');
+  c.toBlob(function (blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = namaBerkasQR();
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+    toast('Gambar diunduh', a.download, 'sukses');
+  }, 'image/png');
+}
+
+/** Bagikan lewat menu HP (WhatsApp, dll.) — gambar bila didukung, kalau tidak link saja */
+function bagikanQRLoginSiswa() {
+  const link = alamatLoginSiswa();
+  const judul = 'Login Siswa SIKAP BK';
+  const teks = 'Login SIKAP BK untuk siswa ' + ((AppState.konfigurasi && AppState.konfigurasi.namaSekolah) || '') +
+               ': masuk dengan NISN dan tanggal lahir (dd-mm-yyyy).';
+  const kirim = function (data) {
+    navigator.share(data).catch(function (e) { if (e && e.name !== 'AbortError') salinLinkSiswa(); });
+  };
+  const berkas = AppState.berkasQR;
+  if (berkas && navigator.canShare && navigator.canShare({ files: [berkas] })) {
+    kirim({ files: [berkas], title: judul, text: teks + ' ' + link });
+  } else {
+    kirim({ title: judul, text: teks, url: link });
+  }
+}
+
+function salinLinkSiswa() {
+  const link = alamatLoginSiswa();
+  const berhasil = function () { toast('Link disalin', link, 'sukses'); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(berhasil, function () { salinCara_lama(link) ? berhasil() : null; });
+  } else if (salinCara_lama(link)) berhasil();
+}
+function salinCara_lama(teks) {
+  try {
+    const t = document.createElement('textarea'); t.value = teks; t.setAttribute('readonly', '');
+    t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select();
+    const ok = document.execCommand('copy'); t.remove(); return ok;
+  } catch (e) { return false; }
 }
 
 /** Kartu pratinjau + tombol unggah untuk satu logo */

@@ -45,7 +45,8 @@ const API_ARGUMEN = {
   doLogin                   : ['kredensial'],
   getDaftarGuruLogin        : [],
   doLogout                  : ['token'],
-  catatMasuk                : ['token'],
+  lanjutkanSesi             : ['token'],      // v3.7 — sesi tersimpan di perangkat
+  catatMasuk                : ['token', 'jenis'],
   refreshData               : ['token'],
   ubahPasswordSendiri       : ['token', 'passwordLama', 'passwordBaru'],
   simpanPoinBatch           : ['token', 'catatan'],
@@ -96,7 +97,7 @@ const API_BACA = ['doLogin', 'getDaftarGuruLogin', 'refreshData'];
  * Isinya: membaca data, login, dan membuat dokumen (paling buruk: satu salinan
  * PDF tambahan di folder Drive — yang diunduh tetap satu).
  */
-const API_ULANG_AMAN = ['doLogin', 'getDaftarGuruLogin', 'refreshData', 'cekPasang', 'getTemplateImport',
+const API_ULANG_AMAN = ['doLogin', 'getDaftarGuruLogin', 'refreshData', 'cekPasang', 'getTemplateImport', 'lanjutkanSesi',
                         'buatLaporanPDF', 'buatLaporanPendampinganPDF', 'buatSuratPDF'];
 // Jeda sebelum tiap percobaan ulang. Beberapa menit setelah "Versi baru"
 // diterapkan, server Google kadang menjawab 404 atau putus sesaat.
@@ -250,9 +251,13 @@ async function apiKirim(aksi, args) {
 
   const tulis = API_ULANG_AMAN.indexOf(aksi) === -1;
   if (tulis) muatan.kunciIdem = buatKunciIdem();      // SAMA untuk setiap percobaan ulang
-  const jeda = tulis ? JEDA_ULANG_TULIS_MS : JEDA_ULANG_MS;
+  // Membuka kembali sesi tersimpan (v3.7): cepat menyerah — layar login lebih
+  // baik muncul dalam belasan detik daripada pengguna menatap layar muat.
+  const sesiPerangkat = aksi === 'lanjutkanSesi';
+  const jeda = sesiPerangkat ? [1500] : (tulis ? JEDA_ULANG_TULIS_MS : JEDA_ULANG_MS);
   // Unggah berkas (PDF tata tertib s.d. 10 MB) bisa lama di internet sekolah yang lambat
-  const batasMs = aksi === 'unggahBerkas' ? 5 * 60 * 1000 : (tulis ? BATAS_TUNGGU_TULIS_MS : BATAS_TUNGGU_BACA_MS);
+  const batasMs = aksi === 'unggahBerkas' ? 5 * 60 * 1000 :
+                  (sesiPerangkat ? 15 * 1000 : (tulis ? BATAS_TUNGGU_TULIS_MS : BATAS_TUNGGU_BACA_MS));
   const tidur = function (ms) { return new Promise(function (ok) { setTimeout(ok, ms); }); };
 
   let terakhir = null;
