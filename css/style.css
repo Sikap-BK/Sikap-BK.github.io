@@ -1078,6 +1078,32 @@ table.tabel.tabel-riwayat .kol-pencatat { max-width: 150px; font-size: 12.5px; l
 .hasil-cari .kanan { margin-left: auto; text-align: right; }
 .hasil-cari .kosong-hasil { padding: 16px; text-align: center; color: var(--text-secondary); font-size: 13px; }
 
+/* ── PEMILIH JENIS PELANGGARAN/KEBAIKAN YANG BISA DICARI (v3.8) ─────────── */
+#blokPilihJenis { scroll-margin-top: 76px; }
+.pemilih-jenis .kotak-cari input { padding-right: 44px; }
+.kotak-cari .hapus-pilihan {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.kotak-cari .hapus-pilihan[hidden] { display: none; }
+.kotak-cari .hapus-pilihan i { position: static; transform: none; color: inherit; }
+.kotak-cari .hapus-pilihan:hover, .kotak-cari .hapus-pilihan:focus-visible { background: var(--navy-soft); color: var(--text-primary); }
+.hasil-jenis { max-height: min(340px, 52vh); overscroll-behavior: contain; }
+.hasil-jenis .isi-jenis { min-width: 0; flex: 1 1 auto; }
+.hasil-jenis .sb { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hasil-jenis button.terpilih { box-shadow: inset 3px 0 0 var(--gold); background: var(--gold-soft); }
+.hasil-jenis mark { background: var(--gold-soft); color: inherit; padding: 0 1px; border-radius: 3px; font-weight: 700; }
+.hasil-jenis .poin-jenis {
+  display: inline-block; min-width: 42px; padding: 2px 8px; border-radius: var(--r-pill);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; text-align: center;
+}
+.hasil-jenis .poin-jenis.minus { background: var(--merah-bg); color: var(--merah-tx); }
+.hasil-jenis .poin-jenis.plus  { background: var(--hijau-bg); color: var(--hijau-tx); }
+.hasil-jenis .opsi-manual { min-height: 44px; }
+.hasil-jenis .opsi-manual .nm { color: var(--navy); }
+
 .wadah-chip {
   display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
   padding: 10px; border-radius: var(--r-md);

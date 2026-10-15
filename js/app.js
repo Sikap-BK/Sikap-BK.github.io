@@ -124,7 +124,22 @@ document.addEventListener('DOMContentLoaded', function () {
     const blok = document.getElementById('blokPilihSiswa');
     const hasil = document.getElementById('hasilCariSiswa');
     if (hasil && blok && !blok.contains(ev.target)) hasil.innerHTML = '';
+    // v3.8 — daftar jenis pelanggaran/kebaikan juga ditutup saat mengetuk di luar
+    const blokJ = document.getElementById('blokPilihJenis');
+    const hasilJ = document.getElementById('hasilCariJenis');
+    if (hasilJ && hasilJ.innerHTML && blokJ && !blokJ.contains(ev.target)) tutupDaftarJenis();
   });
+
+  // v3.8 — Tombol Back HP: mundur satu langkah di dalam aplikasi (BAGIAN 6b)
+  window.addEventListener('popstate', tanganiTombolKembali);
+  document.addEventListener('show.bs.modal', function (ev) { if (ev.target && ev.target.id) riwayatBukaLapisan(ev.target.id); });
+  document.addEventListener('hidden.bs.modal', function (ev) { if (ev.target && ev.target.id) riwayatTutupLapisan(ev.target.id); });
+  // Sentuhan pertama di Beranda memasang langkah penjaga — dengan begitu Back
+  // pertama di Beranda menampilkan "tekan sekali lagi untuk keluar"
+  document.addEventListener('click', function () {
+    const s = Riwayat.aktif && history.state;
+    if (s && s.sikap === 1 && s.akar) pasangJagaRiwayat_();
+  }, true);
 
   // v3.7 — Centang "Tetap masuk" + tab peran dari alamat (QR login siswa: ?peran=siswa)
   pasangCentangIngat();
@@ -239,6 +254,7 @@ function pilihPeran(peran) {
   document.getElementById('kolomGuru').style.display  = peran === 'guru'  ? '' : 'none';
   document.getElementById('kolomSiswa').style.display = peran === 'siswa' ? '' : 'none';
   document.getElementById('galatLogin').style.display = 'none';
+  perbaruiLabelIngat();                 // v3.8: guru di HP → "sampai menekan Keluar"
 }
 
 function tampilGalatLogin(pesan) {
@@ -271,6 +287,9 @@ function tanganiLogin(ev) {
   const ingat = document.getElementById('ingatPerangkat');
   AppState.ingatPerangkat = ingat ? ingat.checked : false;
   if (ingat) ingatPilihanIngat(ingat.checked);
+  // v3.8 — Guru di HP/tablet yang mencentang: sesi berlaku sampai Keluar
+  const mintaKekal = peran === 'guru' && AppState.ingatPerangkat && hpSentuh_();
+  AppState.sesiKekal = false;
 
   const btn = document.getElementById('tombolLogin');
   const asli = btn.innerHTML;
@@ -287,6 +306,8 @@ function tanganiLogin(ev) {
       // Simpan token di memori JavaScript — TIDAK PERNAH di URL
       AppState.token  = res.data.token;
       AppState.profil = res.data.profil;
+      // v3.8 — server sudah mendaftarkan HP ini (Kode.gs lama tidak → tetap 5 jam)
+      AppState.sesiKekal = res.data.sesiKekal === true;
 
       // v3.2 — Akun yang masih memakai kata sandi bawaan (admin123, guru123, …)
       // sengaja TIDAK diberi data oleh server sampai kata sandinya diganti.
@@ -309,7 +330,7 @@ function tanganiLogin(ev) {
       tutupSambutan();
       tampilGalatLogin('Gagal terhubung: ' + err.message);
     })
-    .doLogin({ peran: peran, username: username, password: password });
+    .doLogin({ peran: peran, username: username, password: password, ingat: mintaKekal });
 }
 
 /** Membuka layar aplikasi dengan paket data dari server */
@@ -322,7 +343,8 @@ function bukaAplikasi(paket, pesan, dariPerangkat) {
   document.getElementById('layarLogin').style.display = 'none';
   document.getElementById('layarAplikasi').style.display = 'block';
 
-  siapkanAplikasi();
+  siapkanAplikasi(dariPerangkat);
+  riwayatMulai(dariPerangkat);           // v3.8: tombol Back HP mundur di dalam aplikasi
   tutupSambutan();
   toast('Selamat datang', pesan || 'Selamat datang di SIKAP BK.', 'sukses');
 
@@ -361,10 +383,14 @@ function tempatSesi_(nama) {
 
 function simpanSesiPerangkat() {
   if (!AppState.token) return lupakanSesiPerangkat();
-  const isi = JSON.stringify({
+  const data = {
     t: AppState.token, s: Date.now() + LAMA_SESI_PERANGKAT_MS, u: alamatServer_(),
     p: (AppState.profil && AppState.profil.peran) || ''
-  });
+  };
+  // v3.8 — HP guru yang terdaftar di server: tanpa batas waktu, sampai Keluar.
+  // (s tetap diisi supaya app.js versi lama membacanya sebagai sesi 5 jam.)
+  if (AppState.sesiKekal === true) data.k = 1;
+  const isi = JSON.stringify(data);
   const tab = tempatSesi_('sessionStorage'), awet = tempatSesi_('localStorage');
   try { if (tab) tab.setItem(KUNCI_SESI_PERANGKAT, isi); } catch (e) { /* mode penyamaran ketat */ }
   try {
@@ -380,8 +406,9 @@ function bacaSesiDari_(tempat) {
   try {
     const d = JSON.parse(tempat.getItem(KUNCI_SESI_PERANGKAT) || 'null');
     if (!d || !d.t || !d.s) return null;
-    // Kedaluwarsa, atau milik sekolah lain (satu situs bisa melayani banyak sekolah)
-    if (Date.now() > Number(d.s) || d.u !== alamatServer_()) { tempat.removeItem(KUNCI_SESI_PERANGKAT); return null; }
+    // Kedaluwarsa, atau milik sekolah lain (satu situs bisa melayani banyak sekolah).
+    // Sesi HP guru (k) tidak kedaluwarsa — server yang memutuskan masih sah atau tidak.
+    if ((d.k !== 1 && Date.now() > Number(d.s)) || d.u !== alamatServer_()) { tempat.removeItem(KUNCI_SESI_PERANGKAT); return null; }
     return d;
   } catch (e) { return null; }
 }
@@ -428,9 +455,29 @@ function pasangCentangIngat() {
   kotak.className = 'form-check mb-3 ingat-perangkat';
   kotak.innerHTML =
     '<input class="form-check-input" type="checkbox" id="ingatPerangkat"' + (bawaanIngatPerangkat() ? ' checked' : '') + '>' +
-    '<label class="form-check-label" for="ingatPerangkat">Tetap masuk di perangkat ini selama 5 jam' +
-      '<span class="form-text d-block mt-0">Tanpa centang: refresh tetap aman, sesi berakhir saat browser ditutup (untuk komputer bersama).</span></label>';
+    '<label class="form-check-label" for="ingatPerangkat"><span id="judulIngat"></span>' +
+      '<span class="form-text d-block mt-0" id="ketIngat"></span></label>';
   tombol.parentNode.insertBefore(kotak, tombol);
+  perbaruiLabelIngat();
+}
+
+/** HP / tablet sungguhan (layar sentuh), bukan sekadar jendela komputer yang sempit */
+function hpSentuh_() {
+  return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+
+/** Tulisan centang menyesuaikan peran: guru di HP tetap masuk sampai Keluar (v3.8) */
+function perbaruiLabelIngat() {
+  const judul = document.getElementById('judulIngat');
+  const ket = document.getElementById('ketIngat');
+  if (!judul || !ket) return;
+  if (AppState.peranLogin === 'guru' && hpSentuh_()) {
+    judul.textContent = 'Tetap masuk di HP ini sampai saya menekan Keluar';
+    ket.textContent = 'Untuk HP pribadi. Matikan bila memakai HP orang lain.';
+  } else {
+    judul.textContent = 'Tetap masuk di perangkat ini selama 5 jam';
+    ket.textContent = 'Tanpa centang: refresh tetap aman, sesi berakhir saat browser ditutup (untuk komputer bersama).';
+  }
 }
 
 /**
@@ -469,6 +516,7 @@ function pulihkanSesiPerangkat(lanjutLogin) {
       try {
         AppState.token = d.t;
         AppState.profil = res.data.profil;
+        AppState.sesiKekal = res.data.sesiKekal === true;
         bukaAplikasi(res.data.bootstrap, res.message, true);
         sembunyikanOverlayMuat();
       } catch (e) {
@@ -538,6 +586,7 @@ function mintaGantiSandiBawaan(sandiLama) {
       google.script.run
         .withSuccessHandler(function (res) {
           if (!res.success) return gagal(res.message);
+          if (res.data && res.data.sesiKekal === true) AppState.sesiKekal = true;   // v3.8
           // Sandi sudah diganti — ambil data dengan sesi yang sama
           google.script.run
             .withSuccessHandler(function (r2) {
@@ -626,7 +675,7 @@ function terapkanBootstrap(b) {
   AppState.bolehPengaduan   = !!b.bolehPengaduan;
 }
 
-function siapkanAplikasi() {
+function siapkanAplikasi(dariPerangkat) {
   const p = AppState.profil;
   document.getElementById('namaPengguna').textContent = p.nama;
   document.getElementById('peranPengguna').textContent = p.labelPeran;
@@ -653,6 +702,14 @@ function siapkanAplikasi() {
     const boleh = definisiMenu().filter(function (m) { return m.id; })
                                 .map(function (m) { return m.id; });
     if (boleh.indexOf(pref.halaman) !== -1) awal = pref.halaman;
+  }
+  // v3.8 — Muat ulang / Back ke langkah lama: buka halaman yang tercatat di langkah itu
+  const st = dariPerangkat && history.state && history.state.sikap === 1 ? history.state : null;
+  if (st && st.h && halamanBoleh_(st.h)) {
+    if (st.h !== 'detailSiswa') awal = st.h;
+    else if (st.d && AppState.siswa.some(function (x) { return String(x.NISN) === String(st.d); })) {
+      AppState.detailNisn = st.d; awal = 'detailSiswa';
+    }
   }
   navigateTo(awal);
 }
@@ -828,6 +885,7 @@ function tanganiLogout() {
     AppState.sedangDisimpan = {}; AppState.segarkanTertunda = false;
     lupakanSesiPerangkat();                               // v3.7: perangkat ini lupa sesinya
     lupakanSemuaPdf();                                    // v3.7: dokumen PDF dilepas dari memori
+    riwayatSelesai();                                     // v3.8: Back di layar login tidak berputar-putar
     tutupLembarLainnya();
     document.body.classList.remove('ada-nav-bawah', 'ketik-hp');
     lupakanPreferensi();
@@ -1110,6 +1168,7 @@ function bukaLembarLainnya() {
   lembar.classList.add('tampil');
   document.getElementById('lembarHampar').classList.add('tampil');
   document.body.classList.add('lembar-buka');
+  riwayatBukaLapisan('lembar');
   const b = document.getElementById('nbLainnya');
   if (b) b.setAttribute('aria-expanded', 'true');
   // Fokus dipindah ke dalam lembar (untuk pembaca layar & papan ketik)
@@ -1127,6 +1186,7 @@ function tutupLembarLainnya(kembalikanFokus) {
   document.body.classList.remove('lembar-buka');
   const b = document.getElementById('nbLainnya');
   if (b) { b.setAttribute('aria-expanded', 'false'); if (fokusDiDalam) b.focus({ preventScroll: true }); }
+  riwayatTutupLapisan('lembar');
 }
 
 /** Lembar ditutup dengan menyeret pegangan/kepalanya ke bawah, seperti aplikasi HP */
@@ -1200,6 +1260,286 @@ function navigateTo(halaman) {
 
   // Render dari data lokal — tidak ada panggilan server
   render(halaman);
+  riwayatCatatHalaman();                 // v3.8: satu langkah untuk tombol Back
+}
+
+// ════════════════════════════════════════════════════════════════════
+// BAGIAN 6b: TOMBOL KEMBALI (BACK) HP — v3.8
+// ════════════════════════════════════════════════════════════════════
+//
+// Dulu tombol Back HP langsung keluar dari aplikasi, karena seluruh SIKAP BK
+// hanya satu halaman web. Kini setiap pindah halaman dan setiap jendela /
+// lembar yang dibuka dicatat sebagai satu langkah di riwayat peramban, dan
+// tombol Back (tombol HP, gestur geser, atau ← di peramban) mundur SATU
+// langkah di dalam aplikasi:
+//
+//   1. jendela, lembar "Lainnya", atau menu samping yang terbuka → ditutup
+//   2. selain itu → kembali ke halaman sebelumnya
+//   3. sudah di halaman pertama → pindah ke Beranda (Dashboard / Kartu Saya)
+//   4. sudah di Beranda → "Tekan Kembali sekali lagi untuk keluar"
+//
+// Alamat halaman TIDAK berubah (?s=… dan ?peran=… tetap utuh). Yang dicatat
+// hanya penanda kecil di history.state: { sikap, i, h, d, m, mati, akar }.
+//   i    = nomor langkah        h = halaman      d = NISN (Detail Siswa)
+//   m    = lapisan terbuka (id jendela / 'lembar' / 'sidebar')
+//   mati = lapisan itu sudah ditutup lewat tombolnya sendiri
+//   akar = langkah paling bawah milik aplikasi
+
+const Riwayat = {
+  aktif: false,      // hanya selama aplikasi terbuka (bukan layar login)
+  i: 0,              // nomor langkah yang sedang tampil
+  dasar: 0,          // langkah terbawah milik dokumen ini (sesudah muat ulang bisa > 0)
+  sedangPop: false,  // navigateTo() dipanggil karena tombol Back → jangan catat lagi
+  abaikan: 0,        // popstate yang kita picu sendiri (membuang langkah jendela bekas)
+  tumpuk: []         // salinan state per langkah, untuk tombol "Kembali" di dalam halaman
+};
+
+function halamanBeranda_() {
+  return AppState.profil && AppState.profil.peran === 'siswa' ? 'portalSiswa' : 'dashboard';
+}
+
+/** Halaman yang boleh dibuka peran ini (Back tidak boleh membuka halaman terlarang) */
+function halamanBoleh_(h) {
+  if (!h || !JUDUL[h] || !AppState.profil) return false;
+  if (h === halamanBeranda_()) return true;
+  const ids = definisiMenu().filter(function (m) { return m.id; }).map(function (m) { return m.id; });
+  if (h === 'detailSiswa') return ids.indexOf('dataSiswa') !== -1;
+  return ids.indexOf(h) !== -1;
+}
+
+function stateRiwayat_(tambahan) {
+  const s = { sikap: 1, i: Riwayat.i, h: AppState.halamanAktif || '' };
+  if (s.h === 'detailSiswa' && AppState.detailNisn) s.d = String(AppState.detailNisn);
+  return Object.assign(s, tambahan || {});
+}
+function dorongRiwayat_(st) {
+  try { history.pushState(st, ''); } catch (e) { return; }
+  Riwayat.tumpuk.length = st.i; Riwayat.tumpuk[st.i] = st;
+}
+function gantiRiwayat_(st) {
+  try { history.replaceState(st, ''); } catch (e) { return; }
+  Riwayat.tumpuk[st.i] = st;
+}
+function stateKini_() {
+  const s = history.state;
+  return s && s.sikap === 1 ? s : null;
+}
+
+/** Apakah lapisan (jendela / lembar / menu samping) itu sedang terbuka? */
+function lapisanTerbuka_(m) {
+  if (!m) return false;
+  if (m === 'lembar')  { const l = document.getElementById('lembarLainnya'); return !!(l && l.classList.contains('tampil')); }
+  if (m === 'sidebar') { const s = document.getElementById('sidebar'); return !!(s && s.classList.contains('tampil')); }
+  const el = document.getElementById(m);
+  if (!el) return false;
+  if (el.classList.contains('show')) return true;
+  // Jendela yang baru saja dibuka lagi (masih menunggu latar gelapnya) belum
+  // punya kelas .show, tetapi Bootstrap sudah menandainya tampil
+  const M = window.bootstrap && bootstrap.Modal;
+  const inst = M && M.getInstance ? M.getInstance(el) : null;
+  return !!(inst && inst._isShown === true);
+}
+
+/** Langkah lapisan yang lapisannya sudah tidak tampil — dilewati saat Back */
+function langkahBasi_(s) { return !!(s && (s.mati || (s.m && !lapisanTerbuka_(s.m)))); }
+
+/** Dipanggil saat aplikasi terbuka (login atau sesi dipulihkan) */
+function riwayatMulai(dariPerangkat) {
+  const s = stateKini_();
+  Riwayat.tumpuk = [];
+  if (dariPerangkat && s && typeof s.i === 'number') {
+    // Muat ulang (refresh) di tengah pemakaian: lanjutkan nomor langkahnya.
+    // Langkah di bawahnya milik dokumen lama — Back ke sana memuat ulang
+    // halaman lalu membuka halaman yang tercatat di langkah itu.
+    Riwayat.i = s.i;
+    gantiRiwayat_(stateRiwayat_(s.akar ? { akar: true } : {}));
+  } else {
+    Riwayat.i = 0;
+    gantiRiwayat_(stateRiwayat_({ akar: true }));
+  }
+  Riwayat.dasar = Riwayat.i;
+  Riwayat.aktif = true;
+  // Langsung pasang langkah penjaga di atas akar: Back pertama tetap di dalam
+  // aplikasi (pindah ke Beranda / tawaran keluar), bukan langsung menutupnya.
+  pasangJagaRiwayat_();
+}
+
+/** Keluar: kembalikan riwayat ke langkah dasar supaya Back di layar login tidak berputar-putar */
+function riwayatSelesai() {
+  if (!Riwayat.aktif) return;
+  Riwayat.aktif = false;
+  const mundur = Riwayat.i - Riwayat.dasar;
+  const bersihkan = function () { try { history.replaceState(null, ''); } catch (e) {} };
+  if (mundur > 0) {
+    const sesudah = function () { window.removeEventListener('popstate', sesudah); bersihkan(); };
+    window.addEventListener('popstate', sesudah);
+    try { history.go(-mundur); } catch (e) { window.removeEventListener('popstate', sesudah); bersihkan(); }
+  } else {
+    bersihkan();
+  }
+  Riwayat.i = 0; Riwayat.dasar = 0; Riwayat.tumpuk = [];
+}
+
+/** Dipanggil di akhir navigateTo(): pindah halaman = satu langkah baru */
+function riwayatCatatHalaman() {
+  if (!Riwayat.aktif || Riwayat.sedangPop) return;
+  const kini = stateKini_();
+  const baru = stateRiwayat_();
+  if (kini && langkahBasi_(kini) && !kini.akar) {
+    // Halaman yang dipilih = halaman di bawah lembar itu (mengetuk halaman yang
+    // sedang tampil): tidak ada langkah baru — langkah lembar dibuang oleh
+    // riwayatTutupLapisan(), jadi Back berikutnya tidak terbuang
+    const bawah = Riwayat.tumpuk[kini.i - 1];
+    if (bawah && !bawah.m && !bawah.mati && bawah.h === baru.h && (bawah.d || '') === (baru.d || '')) return;
+    // Selain itu langkah lapisan yang sudah tertutup (mis. lembar "Lainnya" yang
+    // barusan dipakai untuk memilih halaman ini) ditimpa, bukan ditumpuk
+    baru.i = Riwayat.i = kini.i;
+    return gantiRiwayat_(baru);
+  }
+  if (kini && !kini.m && kini.h === baru.h && (kini.d || '') === (baru.d || '')) return;   // halaman yang sama
+  Riwayat.i = (kini ? kini.i : Riwayat.i) + 1;
+  baru.i = Riwayat.i;
+  dorongRiwayat_(baru);
+}
+
+/** Jendela / lembar / menu samping dibuka → satu langkah */
+function riwayatBukaLapisan(m) {
+  if (!Riwayat.aktif || Riwayat.sedangPop) return;
+  const kini = stateKini_();
+  const st = stateRiwayat_({ m: m });
+  if (kini && kini.m === m && !kini.mati) return;
+  if (kini && !kini.akar && kini.m && langkahBasi_(kini)) {   // menimpa jendela bekas (mis. formulir → konfirmasi)
+    st.i = Riwayat.i = kini.i;
+    return gantiRiwayat_(st);
+  }
+  Riwayat.i = (kini ? kini.i : Riwayat.i) + 1;
+  st.i = Riwayat.i;
+  dorongRiwayat_(st);
+}
+
+/**
+ * Lapisan ditutup lewat tombolnya sendiri (✕, Batal, Simpan, ketuk di luar):
+ * langkahnya ditandai mati lalu dibuang, supaya Back berikutnya tidak
+ * "terbuang" untuk menutup jendela yang sudah tertutup.
+ */
+function riwayatTutupLapisan(m) {
+  if (!Riwayat.aktif) return;
+  const kini = stateKini_();
+  if (!kini || kini.m !== m || kini.mati) return;
+  // Jendela yang sama langsung dibuka lagi (mis. dua konfirmasi berturut-turut):
+  // langkahnya tetap dipakai jendela yang baru
+  if (lapisanTerbuka_(m)) return;
+  const mati = Object.assign({}, kini, { mati: true });
+  gantiRiwayat_(mati);
+  setTimeout(function () {
+    // Bila sesudahnya tidak ada yang menimpa langkah ini (jendela lain / pindah
+    // halaman), mundur satu langkah diam-diam
+    const s = stateKini_();
+    if (Riwayat.aktif && s && s.mati && s.i === mati.i && s.m === m && !lapisanTerbuka_(m)) {
+      Riwayat.abaikan++;
+      history.back();
+    }
+  }, 0);
+}
+
+/** Tutup jendela Bootstrap — juga yang masih dalam animasi muncul */
+function tutupModal_(el) {
+  const M = window.bootstrap && bootstrap.Modal;
+  const m = M && M.getInstance ? M.getInstance(el) : null;
+  if (!m) return;
+  if (m._isTransitioning) el.addEventListener('shown.bs.modal', function () { m.hide(); }, { once: true });
+  else m.hide();
+}
+
+/** Tutup semua lapisan yang terbuka, kecuali milik langkah tujuan. true bila ada yang ditutup */
+function tutupLapisanTerbuka_(kecuali) {
+  let ada = false;
+  document.querySelectorAll('.modal').forEach(function (el) {
+    if (!el.id || el.id === kecuali || !lapisanTerbuka_(el.id)) return;
+    ada = true; tutupModal_(el);
+  });
+  if (kecuali !== 'lembar' && lapisanTerbuka_('lembar')) { ada = true; tutupLembarLainnya(); }
+  if (kecuali !== 'sidebar' && lapisanTerbuka_('sidebar')) { ada = true; tutupSidebar(); }
+  return ada;
+}
+
+function pindahDariRiwayat_(s) {
+  let h = s.h;
+  if (h === 'detailSiswa') {
+    const ada = s.d && AppState.siswa.some(function (x) { return String(x.NISN) === String(s.d); });
+    if (ada) AppState.detailNisn = s.d; else h = 'dataSiswa';
+  }
+  if (!halamanBoleh_(h)) h = halamanBeranda_();
+  Riwayat.sedangPop = true;
+  try { navigateTo(h); } finally { Riwayat.sedangPop = false; }
+}
+
+/** Langkah penjaga di atas langkah akar, supaya Back di Beranda bisa ditanyakan dulu */
+function pasangJagaRiwayat_() {
+  const kini = stateKini_();
+  if (!Riwayat.aktif || !kini || !kini.akar) return;
+  Riwayat.i = kini.i + 1;
+  dorongRiwayat_(stateRiwayat_({ i: Riwayat.i }));
+}
+
+function tanganiTombolKembali(ev) {
+  if (Riwayat.abaikan > 0) {                   // langkah jendela bekas yang kita buang sendiri
+    Riwayat.abaikan--;
+    const s0 = stateKini_(); if (s0) Riwayat.i = s0.i;
+    // Dua jendela bertumpuk yang tertutup bersamaan (formulir + konfirmasi):
+    // langkah jendela bawah ikut dibuang, supaya Back berikutnya tidak terbuang
+    if (Riwayat.aktif && s0 && !s0.akar && s0.i > Riwayat.dasar && langkahBasi_(s0)) {
+      Riwayat.abaikan++;
+      history.back();
+    }
+    return;
+  }
+  if (!Riwayat.aktif || !AppState.token) return;
+  const s = ev.state && ev.state.sikap === 1 ? ev.state : null;
+  if (!s) return;                              // langkah di luar aplikasi
+  const maju = s.i > Riwayat.i;
+  Riwayat.i = s.i;
+  Riwayat.tumpuk[s.i] = s;
+
+  const basi = !s.akar && langkahBasi_(s);     // dinilai SEBELUM lapisan ditutup
+  const ditutup = tutupLapisanTerbuka_(s.m && !s.mati ? s.m : '');
+
+  // ── Langkah paling bawah ──
+  if (s.akar) {
+    if (ditutup) return pasangJagaRiwayat_();
+    if (AppState.halamanAktif !== halamanBeranda_()) {
+      pindahDariRiwayat_({ h: halamanBeranda_() });
+      gantiRiwayat_(stateRiwayat_({ i: s.i, akar: true }));
+      return pasangJagaRiwayat_();
+    }
+    // Sudah di Beranda: Back berikutnya benar-benar keluar (diurus peramban)
+    toast('Keluar dari SIKAP BK?', 'Tekan tombol Kembali sekali lagi untuk keluar.', '');
+    return;
+  }
+
+  // ── Langkah jendela/lembar yang sudah tertutup → lewati ──
+  if (basi) {
+    if (ditutup) return gantiRiwayat_(stateRiwayat_({ i: s.i }));   // perbaiki, cukup satu langkah
+    return maju ? history.forward() : history.back();
+  }
+
+  // ── Halaman tujuan ──
+  const samaHalaman = s.h === AppState.halamanAktif &&
+    (s.h !== 'detailSiswa' || String(s.d || '') === String(AppState.detailNisn || ''));
+  if (ditutup && samaHalaman) return;
+  if (!samaHalaman) pindahDariRiwayat_(s);
+}
+
+/**
+ * Tombol "Kembali" di dalam halaman (mis. Detail Siswa → Data Siswa):
+ * bila halaman itu memang langkah sebelumnya, mundur seperti tombol Back —
+ * supaya Back HP berikutnya tidak membuka Detail Siswa lagi.
+ */
+function kembaliKe(halaman) {
+  const kini = stateKini_();
+  const sebelum = kini && kini.i > Riwayat.dasar ? Riwayat.tumpuk[kini.i - 1] : null;
+  if (Riwayat.aktif && sebelum && sebelum.h === halaman && !sebelum.m && !sebelum.mati) return history.back();
+  navigateTo(halaman);
 }
 
 function render(halaman) {
@@ -1226,10 +1566,14 @@ function renderUlang() { render(AppState.halamanAktif); renderMenu(); }
 function bukaSidebar() {
   document.getElementById('sidebar').classList.add('tampil');
   document.getElementById('hamparanSidebar').classList.add('tampil');
+  riwayatBukaLapisan('sidebar');
 }
 function tutupSidebar() {
-  document.getElementById('sidebar').classList.remove('tampil');
+  const sb = document.getElementById('sidebar');
+  const tadiTerbuka = sb.classList.contains('tampil');
+  sb.classList.remove('tampil');
   document.getElementById('hamparanSidebar').classList.remove('tampil');
+  if (tadiTerbuka) riwayatTutupLapisan('sidebar');
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2055,10 +2399,28 @@ function renderInputPoin() {
             '<div id="wadahSiswaTerpilih"></div>' +
           '</div>' +
 
-          '<div class="mb-3">' +
-            '<label class="form-label" for="poinJenis">Jenis ' + (isPelanggaran ? 'Pelanggaran' : 'Kebaikan') + ' <span class="wajib">*</span></label>' +
-            '<select class="form-select" id="poinJenis" required onchange="pilihJenisPoin(this.value)">' + opsiJenis + '</select>' +
-            '<div class="form-text">Tidak ada di daftar? Pilih <b>Lainnya — ketik manual</b> di paling bawah.</div>' +
+          // ── Jenis pelanggaran/kebaikan: ketik untuk mencari (v3.8) ──
+          '<div class="mb-3" id="blokPilihJenis" onfocusout="lepasFokusJenis(event)">' +
+            '<label class="form-label" for="poinJenisCari">Jenis ' + (isPelanggaran ? 'Pelanggaran' : 'Kebaikan') + ' <span class="wajib">*</span></label>' +
+            '<div class="pemilih-siswa pemilih-jenis">' +
+              '<div class="kotak-cari">' +
+                '<i class="bi bi-search"></i>' +
+                '<input class="form-control" id="poinJenisCari" autocomplete="off" spellcheck="false" ' +
+                  'role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="hasilCariJenis" ' +
+                  'placeholder="Ketik untuk mencari, mis. ' + (isPelanggaran ? 'terlambat' : 'piket') + '…" ' +
+                  'value="' + escHtml(namaJenisTerpilih()) + '" ' +
+                  'oninput="cariJenisPoin(this.value)" onfocus="bukaDaftarJenis(this)" ' +
+                  'onkeydown="navigasiHasilJenis(event)">' +
+                // tabindex -1: Tab langsung ke kolom berikutnya (menghapus cukup dengan mengetik ulang)
+                '<button type="button" class="hapus-pilihan" id="hapusJenis" tabindex="-1" onclick="hapusPilihanJenis()" ' +
+                  'aria-label="Hapus pilihan jenis"' + (d.idJenis ? '' : ' hidden') + '><i class="bi bi-x-lg"></i></button>' +
+              '</div>' +
+              '<div id="hasilCariJenis"></div>' +
+            '</div>' +
+            // Nilai pilihan tetap disimpan di <select> tersembunyi ini — dibaca
+            // simpanCatatanPoin() persis seperti sebelum v3.8.
+            '<select id="poinJenis" class="d-none" tabindex="-1" aria-hidden="true">' + opsiJenis + '</select>' +
+            '<div class="form-text">Ketik sebagian nama untuk mencari. Tidak ada di daftar? Pilih <b>Lainnya — ketik manual</b>.</div>' +
           '</div>' +
 
           // ── Blok ketik manual (muncul saat memilih "Lainnya") ──
@@ -2401,6 +2763,222 @@ function gantiJenisPoin(jenis) {
   renderInputPoin();
 }
 
+// ── PEMILIH JENIS YANG BISA DICARI (v3.8) ──────────────────────────────
+//
+// Daftar tata tertib sekolah bisa puluhan baris. Dulu guru harus menggulir
+// dropdown panjang di HP; kini cukup mengetik sebagian nama ("bolos",
+// "seragam", "hp"). Mengetuk kolomnya tanpa mengetik tetap menampilkan
+// seluruh daftar, jadi cara lama (memilih dari daftar) tetap bisa dipakai.
+//
+// Pilihan disimpan ke <select id="poinJenis"> yang tersembunyi, sehingga
+// simpanCatatanPoin() dan isian otomatis poin/tindakan tidak berubah.
+
+const LABEL_JENIS_MANUAL = 'Lainnya — ketik manual';
+let sorotJenis = -1;
+
+/** Daftar jenis untuk tipe catatan yang sedang dipilih, dalam bentuk seragam */
+function sumberJenisPoin() {
+  const isP = AppState.draftPoin.jenis === 'Pelanggaran';
+  return (isP ? AppState.pelanggaran : AppState.kebaikan).map(function (j) {
+    return {
+      id: String(j.ID),
+      nama: String((isP ? j.NamaPelanggaran : j.NamaKebaikan) || ''),
+      poin: Math.abs(Number(j.Poin) || 0),
+      kategori: String(j.Kategori || '').trim(),
+      tindakan: isP ? String(j.Hukuman || '').trim() : ''
+    };
+  });
+}
+
+/** Teks yang tampil di kolom saat sebuah jenis sudah dipilih */
+function namaJenisTerpilih() {
+  const id = AppState.draftPoin.idJenis;
+  if (!id) return '';
+  if (id === 'MANUAL') return LABEL_JENIS_MANUAL;
+  const j = sumberJenisPoin().filter(function (x) { return x.id === String(id); })[0];
+  return j ? j.nama : '';
+}
+
+/** Huruf kecil, tanpa tanda aksen, spasi dirapikan — untuk mencocokkan ketikan */
+function teksCari_(t) {
+  let s = String(t || '').toLowerCase();
+  try { s = s.normalize('NFD').replace(/[̀-ͯ]/g, ''); } catch (e) {}
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Jenis yang cocok dengan ketikan. Setiap kata harus ada (urutan bebas) di
+ * nama, kategori, atau tindakannya. Yang namanya DIAWALI ketikan tampil
+ * paling atas, lalu yang salah satu katanya diawali ketikan, dst.
+ */
+function kandidatJenis(kata) {
+  const q = teksCari_(kata);
+  const daftar = sumberJenisPoin();
+  if (!q) return daftar;
+  const potongan = q.split(' ');
+  const hasil = [];
+  daftar.forEach(function (j, urut) {
+    const nama = teksCari_(j.nama);
+    const semua = nama + ' ' + teksCari_(j.kategori + ' ' + j.tindakan);
+    if (!potongan.every(function (k) { return semua.indexOf(k) !== -1; })) return;
+    let skor = 3;                                                     // cocok lewat kategori/tindakan
+    if (nama.indexOf(q) === 0) skor = 0;
+    else if ((' ' + nama).indexOf(' ' + potongan[0]) !== -1) skor = 1;
+    else if (potongan.every(function (k) { return nama.indexOf(k) !== -1; })) skor = 2;
+    hasil.push({ j: j, skor: skor, urut: urut });
+  });
+  hasil.sort(function (a, b) { return a.skor - b.skor || a.urut - b.urut; });
+  return hasil.map(function (h) { return h.j; });
+}
+
+/** Tebalkan bagian nama yang cocok dengan ketikan (aman: setiap potongan di-escape) */
+function tebalkanCocok_(teks, kata) {
+  const potongan = teksCari_(kata).split(' ').filter(Boolean);
+  const kecil = String(teks).toLowerCase();
+  if (!potongan.length || kecil.length !== String(teks).length) return escHtml(teks);
+  const tanda = new Array(kecil.length).fill(false);
+  potongan.forEach(function (k) {
+    let i = kecil.indexOf(k);
+    while (i !== -1) { for (let n = 0; n < k.length; n++) tanda[i + n] = true; i = kecil.indexOf(k, i + k.length); }
+  });
+  let out = '', buka = false;
+  for (let i = 0; i < teks.length; i++) {
+    if (tanda[i] && !buka) { out += '<mark>'; buka = true; }
+    if (!tanda[i] && buka) { out += '</mark>'; buka = false; }
+    out += escHtml(teks.charAt(i));
+  }
+  return out + (buka ? '</mark>' : '');
+}
+
+/** Tampilkan daftar jenis di bawah kolom (kosong = seluruh daftar) */
+function cariJenisPoin(kata) {
+  const wadah = document.getElementById('hasilCariJenis');
+  const inp = document.getElementById('poinJenisCari');
+  if (!wadah) return;
+  const isP = AppState.draftPoin.jenis === 'Pelanggaran';
+  const idTerpilih = String(AppState.draftPoin.idJenis || '');
+  const hasil = kandidatJenis(kata);
+  const ketik = String(kata || '').trim();
+  sorotJenis = -1;
+
+  wadah.innerHTML = '<div class="hasil-cari hasil-jenis" role="listbox" aria-label="Pilihan jenis">' +
+    (hasil.length ? '' : '<div class="kosong-hasil">Tidak ada jenis ' + (isP ? 'pelanggaran' : 'kebaikan') +
+      ' yang cocok dengan "' + escHtml(ketik) + '".</div>') +
+    hasil.map(function (j) {
+      const dipilih = j.id === idTerpilih;
+      const ket = [j.kategori, j.tindakan].filter(Boolean).join(' • ');
+      // tabindex -1: pilihan dijelajahi dengan panah ↑↓; Tab keluar dari daftar
+      return '<button type="button" role="option" tabindex="-1" aria-selected="' + dipilih + '"' + (dipilih ? ' class="terpilih"' : '') +
+        ' data-id="' + escHtml(j.id) + '" onclick="pilihJenisDariDaftar(this.dataset.id)">' +
+        '<span class="isi-jenis">' +
+          '<span class="nm d-block">' + tebalkanCocok_(j.nama, ketik) + '</span>' +
+          (ket ? '<span class="sb">' + escHtml(ket) + '</span>' : '') +
+        '</span>' +
+        '<span class="kanan"><span class="poin-jenis ' + (isP ? 'minus' : 'plus') + '">' +
+          (isP ? '−' : '+') + j.poin + '</span></span>' +
+      '</button>';
+    }).join('') +
+    '<button type="button" role="option" tabindex="-1" class="opsi-manual' + (idTerpilih === 'MANUAL' ? ' terpilih' : '') + '"' +
+      ' aria-selected="' + (idTerpilih === 'MANUAL') + '" data-id="MANUAL" onclick="pilihJenisDariDaftar(\'MANUAL\')">' +
+      '<span class="nm"><i class="bi bi-plus-circle"></i> ' + LABEL_JENIS_MANUAL +
+        (ketik && !hasil.length ? ': “' + escHtml(ketik) + '”' : '') + '</span>' +
+    '</button>' +
+  '</div>';
+  if (inp) inp.setAttribute('aria-expanded', 'true');
+}
+
+/** Kolom diketuk: tampilkan seluruh daftar dulu — ketikan berikutnya menyaring */
+function bukaDaftarJenis(inp) {
+  const terpilih = namaJenisTerpilih();
+  if (terpilih && inp.value === terpilih) {
+    cariJenisPoin('');
+    try { inp.select(); } catch (e) {}          // ketikan langsung menggantikan nama lama
+  } else {
+    cariJenisPoin(inp.value);
+  }
+  // Gulir daftar (bukan halaman) ke pilihan yang sedang aktif
+  const daftar = document.querySelector('#hasilCariJenis .hasil-cari');
+  const aktif = daftar && daftar.querySelector('button.terpilih');
+  if (aktif) daftar.scrollTop = Math.max(0, aktif.offsetTop - 48);
+  // HP: papan ketik menutupi separuh layar — naikkan kolom ini ke atas
+  // supaya daftar pilihannya tetap kelihatan
+  if (layarHP()) {
+    setTimeout(function () {
+      const blok = document.getElementById('blokPilihJenis');
+      if (blok && document.activeElement === inp) blok.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 280);
+  }
+}
+
+/** Tutup daftar; isi kolom kembali ke nama yang benar-benar terpilih */
+function tutupDaftarJenis() {
+  const wadah = document.getElementById('hasilCariJenis');
+  if (wadah) wadah.innerHTML = '';
+  sorotJenis = -1;
+  const inp = document.getElementById('poinJenisCari');
+  if (inp) { inp.setAttribute('aria-expanded', 'false'); inp.value = namaJenisTerpilih(); }
+  const x = document.getElementById('hapusJenis');
+  if (x) x.hidden = !AppState.draftPoin.idJenis;
+}
+
+function pilihJenisDariDaftar(id) {
+  const inp = document.getElementById('poinJenisCari');
+  const ketikan = inp ? inp.value.trim() : '';
+  const namaLama = namaJenisTerpilih();
+  const sel = document.getElementById('poinJenis');
+  if (sel) sel.value = id;
+  AppState.draftPoin.idJenis = id;
+  tutupDaftarJenis();
+  if (inp) inp.blur();                          // HP: papan ketik ditutup
+  pilihJenisPoin(id);                           // isi poin & tindakan dari master
+  // "Lainnya" dipilih sesudah mengetik → ketikan itu jadi nama kejadiannya
+  if (id === 'MANUAL' && ketikan && ketikan !== namaLama) {
+    const nm = document.getElementById('poinNamaManual');
+    if (nm && !nm.value.trim()) nm.value = ketikan.charAt(0).toUpperCase() + ketikan.slice(1);
+  }
+}
+
+function hapusPilihanJenis() {
+  const sel = document.getElementById('poinJenis');
+  if (sel) sel.value = '';
+  pilihJenisPoin('');
+  const inp = document.getElementById('poinJenisCari');
+  const x = document.getElementById('hapusJenis');
+  if (x) x.hidden = true;
+  if (inp) { inp.value = ''; inp.focus(); }
+}
+
+/** Panah atas/bawah + Enter + Esc, seperti pencarian siswa */
+function navigasiHasilJenis(ev) {
+  if (ev.key === 'Enter') ev.preventDefault();  // Enter di kolom ini tidak boleh mengirim formulir
+  let tombol = document.querySelectorAll('#hasilCariJenis .hasil-cari button');
+  if (!tombol.length && (ev.key === 'ArrowDown' || ev.key === 'Enter')) {
+    cariJenisPoin(ev.target.value === namaJenisTerpilih() ? '' : ev.target.value);
+    if (ev.key === 'Enter') return;
+    tombol = document.querySelectorAll('#hasilCariJenis .hasil-cari button');
+  }
+  if (!tombol.length) return;
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    sorotJenis += (ev.key === 'ArrowDown' ? 1 : -1);
+    if (sorotJenis < 0) sorotJenis = tombol.length - 1;
+    if (sorotJenis >= tombol.length) sorotJenis = 0;
+    tombol.forEach(function (b, i) { b.classList.toggle('sorot', i === sorotJenis); });
+    tombol[sorotJenis].scrollIntoView({ block: 'nearest' });
+  } else if (ev.key === 'Enter') {
+    tombol[sorotJenis >= 0 ? sorotJenis : 0].click();
+  } else if (ev.key === 'Escape') {
+    ev.preventDefault();
+    tutupDaftarJenis();
+  }
+}
+
+/** Fokus pindah ke luar blok (mis. tombol Tab) → daftar ditutup */
+function lepasFokusJenis(ev) {
+  const blok = document.getElementById('blokPilihJenis');
+  if (ev.relatedTarget && blok && !blok.contains(ev.relatedTarget)) tutupDaftarJenis();
+}
+
 /** Daftar kategori unik dari master, untuk autocomplete saat mengetik manual */
 function daftarKategoriUnik(isPelanggaran) {
   const sumber = isPelanggaran ? AppState.pelanggaran : AppState.kebaikan;
@@ -2650,7 +3228,11 @@ function simpanCatatanPoin(ev) {
     const inp = document.getElementById('poinCariSiswa'); if (inp) inp.focus();
     return;
   }
-  if (!idJenis) { toast('Belum lengkap', 'Pilih jenis catatan, atau pilih "Lainnya — ketik manual".', 'peringatan'); return; }
+  if (!idJenis) {
+    toast('Belum lengkap', 'Pilih jenis catatan, atau pilih "Lainnya — ketik manual".', 'peringatan');
+    const ij = document.getElementById('poinJenisCari'); if (ij) ij.focus();
+    return;
+  }
   if (!tanggal) { toast('Belum lengkap', 'Tentukan tanggal kejadian.', 'peringatan'); return; }
   // Jenis poin yang baru saja ditambahkan dan belum dijawab server belum punya ID resmi
   if (!manual && masihSementara(idJenis)) return tungguSimpan();
@@ -3426,10 +4008,10 @@ function renderDetailSiswa() {
   const el = document.getElementById('section-detailSiswa');
   if (!s) {
     el.innerHTML = '<div class="kosong"><i class="bi bi-person-x"></i><h6>Data siswa tidak ditemukan</h6>' +
-      '<button class="btn btn-hantu mt-2" onclick="navigateTo(\'dataSiswa\')">Kembali</button></div>';
+      '<button class="btn btn-hantu mt-2" onclick="kembaliKe(\'dataSiswa\')">Kembali</button></div>';
     return;
   }
-  el.innerHTML = '<button class="btn btn-hantu btn-kecil mb-3" onclick="navigateTo(\'dataSiswa\')">' +
+  el.innerHTML = '<button class="btn btn-hantu btn-kecil mb-3" onclick="kembaliKe(\'dataSiswa\')">' +
     '<i class="bi bi-arrow-left"></i> Kembali ke Data Siswa</button>' + kartuKarakter(s, true);
 }
 

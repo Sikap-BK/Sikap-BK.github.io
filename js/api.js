@@ -80,8 +80,15 @@ const API_ARGUMEN = {
 };
 
 
-/** Aksi yang boleh lewat GET — sisanya wajib POST (lihat Kode.gs) */
-const API_BACA = ['doLogin', 'getDaftarGuruLogin', 'refreshData'];
+/**
+ * Aksi yang dikirim lewat GET — sisanya POST (lihat Kode.gs).
+ *
+ * v3.8: hanya aksi TANPA token/kata sandi. Alamat GET mudah tercatat (riwayat
+ * peramban, log penyaring internet sekolah, ekstensi), dan token guru di HP kini
+ * tidak kedaluwarsa sampai Keluar — jadi refreshData pindah ke POST.
+ * Kode.gs versi mana pun menerima POST untuk semua aksi.
+ */
+const API_BACA = ['getDaftarGuruLogin'];
 
 /**
  * Kirim satu permintaan ke server.
