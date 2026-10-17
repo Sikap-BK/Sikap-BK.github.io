@@ -48,6 +48,7 @@ const API_ARGUMEN = {
   lanjutkanSesi             : ['token'],      // v3.7 — sesi tersimpan di perangkat
   catatMasuk                : ['token', 'jenis'],
   refreshData               : ['token'],
+  getRiwayatLama            : ['token', 'opsi'],   // v3.9
   ubahPasswordSendiri       : ['token', 'passwordLama', 'passwordBaru'],
   simpanPoinBatch           : ['token', 'catatan'],
   editRiwayat               : ['token', 'payload'],
@@ -104,7 +105,7 @@ const API_BACA = ['getDaftarGuruLogin'];
  * Isinya: membaca data, login, dan membuat dokumen (paling buruk: satu salinan
  * PDF tambahan di folder Drive — yang diunduh tetap satu).
  */
-const API_ULANG_AMAN = ['doLogin', 'getDaftarGuruLogin', 'refreshData', 'cekPasang', 'getTemplateImport', 'lanjutkanSesi',
+const API_ULANG_AMAN = ['doLogin', 'getDaftarGuruLogin', 'refreshData', 'getRiwayatLama', 'cekPasang', 'getTemplateImport', 'lanjutkanSesi',
                         'buatLaporanPDF', 'buatLaporanPendampinganPDF', 'buatSuratPDF'];
 // Jeda sebelum tiap percobaan ulang. Beberapa menit setelah "Versi baru"
 // diterapkan, server Google kadang menjawab 404 atau putus sesaat.

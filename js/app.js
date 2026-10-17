@@ -26,6 +26,14 @@ const AppState = {
   pelanggaran : [],
   kebaikan    : [],
   riwayat     : [],
+  // v3.9 — riwayat lebih dari 500 catatan: berapa yang ada di server, berapa yang
+  // sudah dimuat (urutan sekolah, terbaru dulu), dan siswa yang riwayatnya lengkap
+  riwayatTotal : 0,
+  riwayatDimuat: 0,
+  riwayatSiswaLengkap: {},
+  riwayatSedangDimuat: false,
+  batasRiwayatTampil: 200,
+  isianPoinTertunda: null,   // v3.9 — isian Input Poin yang dikembalikan sesudah gagal simpan
   kelas       : [],
   tindakLanjut : [],
   evaluasi     : [],
@@ -665,6 +673,12 @@ function terapkanBootstrap(b) {
   AppState.pelanggaran  = b.pelanggaran || [];
   AppState.kebaikan     = b.kebaikan || [];
   AppState.riwayat      = b.riwayat || [];
+  AppState.riwayatDimuat = AppState.riwayat.length;
+  AppState.riwayatTotal  = Math.max(Number(b.riwayatTotal) || 0, AppState.riwayat.length);
+  AppState.riwayatSiswaLengkap = {};
+  AppState.batasRiwayatTampil = 200;
+  // Pelanggaran berat di luar 500 terbaru — untuk deteksi Tindak Lanjut (v3.9)
+  if (b.riwayatBerat && b.riwayatBerat.length) gabungRiwayat(b.riwayatBerat, true);
   AppState.kelas        = b.kelas || [];
   AppState.kepalaSekolah= b.kepalaSekolah || { nama: '', nuptk: '' };
   AppState.guruBKSekolah= b.guruBKSekolah || { nama: '', nuptk: '' };
@@ -877,6 +891,11 @@ function tanganiLogout() {
     // Bersihkan data siswa dari memori — SIKAP BK banyak dipakai di komputer
     // bersama, jangan tinggalkan data kelas lain untuk pengguna berikutnya
     AppState.siswa = []; AppState.guru = []; AppState.riwayat = [];
+    AppState.riwayatTotal = 0; AppState.riwayatDimuat = 0; AppState.riwayatSiswaLengkap = {};
+    AppState.isianPoinTertunda = null;
+    // v3.9 — draf Input Poin & isi halaman tidak boleh terbawa ke pengguna berikutnya
+    AppState.draftPoin = { jenis: 'Pelanggaran', nisnTerpilih: [], idJenis: '', foto: null, cari: '', kelasCari: 'SEMUA' };
+    document.querySelectorAll('.content-section').forEach(function (el) { el.innerHTML = ''; });
     AppState.tindakLanjut = []; AppState.evaluasi = []; AppState.kelas = [];
     AppState.pelanggaran = []; AppState.kebaikan = [];
     // Catatan pengaduan & konseling — yang paling peka — ikut dibersihkan (v3.5)
@@ -1018,7 +1037,8 @@ function definisiMenu() {
 }
 
 function renderMenu() {
-  const merah = AppState.siswa.filter(function (s) { return zonaDari(s.PoinSaatIni) === 'Merah'; }).length;
+  // v3.9 — dihitung dari siswa dalam lingkup pengguna (wali kelas: kelasnya saja)
+  const merah = siswaDalamLingkup().filter(function (s) { return zonaDari(s.PoinSaatIni) === 'Merah'; }).length;
   const menu = definisiMenu();
   renderNavBawah(menu, merah);
   document.getElementById('menuSidebar').innerHTML = menu.map(function (m) {
@@ -2046,7 +2066,13 @@ function siswaUntukInputPoin() {
  * wali kelas baru juga melihat riwayat siswanya. Kolom Kelas pada catatan
  * tetap menunjukkan kelas saat kejadian itu terjadi.
  */
-function riwayatDalamLingkup() {
+function riwayatDalamLingkup(termasukLepas) {
+  // v3.9 — catatan lama yang dimuat terpisah (_lepas) hanya untuk yang memintanya
+  // (deteksi Tindak Lanjut); statistik Dashboard tetap dari urutan terbaru.
+  if (!termasukLepas) {
+    const semua = riwayatDalamLingkup(true);
+    return semua.some(function (r) { return r._lepas; }) ? semua.filter(function (r) { return !r._lepas; }) : semua;
+  }
   if (lingkupSatuKelas()) {
     const kelas = String(AppState.profil.waliKelas).trim().toLowerCase();
     const nisnKelas = {};
@@ -2333,6 +2359,9 @@ function potong(t, n) { const s = String(t); return s.length > n ? s.substring(0
 // ════════════════════════════════════════════════════════════════════
 
 function renderInputPoin() {
+  // v3.9 — isian yang sedang diketik ikut dibawa saat halaman digambar ulang
+  // (muat ulang data, kembali dari menu lain), bukan hanya siswa & jenisnya.
+  const isianLama = bacaIsianFormPoin();
   const d = AppState.draftPoin;
   const siswa = siswaUntukInputPoin();   // semua kelas, untuk semua guru
   const isPelanggaran = d.jenis === 'Pelanggaran';
@@ -2541,6 +2570,23 @@ function renderInputPoin() {
   if (d.idJenis) pilihJenisPoin(d.idJenis);
   hitungDampakPoin();
   if (d.foto) tampilPratinjauFoto(d.foto.dataUrl, d.foto.nama);
+  const isian = AppState.isianPoinTertunda || isianLama;
+  AppState.isianPoinTertunda = null;
+  if (isian && isian.draft.jenis === d.jenis && String(isian.draft.idJenis || '') === String(d.idJenis || '')) {
+    terapkanIsianPoin(isian);
+  }
+}
+
+/** Salinan kolom formulir Input Poin yang sedang tampil (null bila belum ada) */
+function bacaIsianFormPoin() {
+  if (!document.getElementById('formPoin')) return null;
+  const v = function (id) { const el = document.getElementById(id); return el ? el.value : undefined; };
+  const cbx = document.getElementById('poinSimpanMaster');
+  return {
+    draft: { jenis: AppState.draftPoin.jenis, idJenis: v('poinJenis') || '' },
+    nilai: v('poinNilai'), tindakan: v('poinTindakan'), tanggal: v('poinTanggal'), catatan: v('poinCatatan'),
+    namaManual: v('poinNamaManual'), kategoriManual: v('poinKategoriManual'), simpanMaster: !!(cbx && cbx.checked)
+  };
 }
 
 function tanggalHariIniISO() {
@@ -3200,6 +3246,8 @@ function hapusFotoBukti() {
 }
 
 function resetFormPoin() {
+  const sek = document.getElementById('section-inputPoin');
+  if (sek) sek.innerHTML = '';            // isian lama sengaja tidak dibawa (v3.9)
   AppState.draftPoin = {
     jenis: AppState.draftPoin.jenis, nisnTerpilih: [], idJenis: '',
     foto: null, cari: '', kelasCari: AppState.draftPoin.kelasCari || 'SEMUA'
@@ -3319,10 +3367,22 @@ function simpanCatatanPoin(ev) {
     ' untuk ' + (jumlah === 1 ? daftarSiswa[0].Nama : jumlah + ' siswa'), 'sukses');
 
   if (masukMerah.length) {
+    // v3.9 — kabar email baru disampaikan setelah server benar-benar mengirimnya
     toast('Zona Merah',
       (masukMerah.length === 1 ? masukMerah[0] : masukMerah.length + ' siswa') +
-      ' memasuki zona merah. Notifikasi email dikirim ke wali kelas.', 'bahaya');
+      ' memasuki zona merah.', 'bahaya');
   }
+
+  // v3.9 — salinan isian formulir; dikembalikan bila penyimpanan gagal
+  const cadangan = {
+    draft: {
+      jenis: d.jenis, nisnTerpilih: d.nisnTerpilih.slice(), idJenis: idJenis,
+      foto: d.foto, cari: '', kelasCari: d.kelasCari || 'SEMUA'
+    },
+    nilai: String(besaran), tindakan: tindakan, tanggal: tanggal, catatan: catatan,
+    namaManual: manual ? namaKejadian : '', kategoriManual: manual ? kategori : '',
+    simpanMaster: simpanKeMaster
+  };
 
   // Kembalikan poin & riwayat seperti semula bila penyimpanan gagal
   const batalkan = function () {
@@ -3345,8 +3405,16 @@ function simpanCatatanPoin(ev) {
     .withSuccessHandler(function (res) {
       if (AppState.token !== tokenKirim) return;        // sesi sudah berganti — abaikan
       tandaSinkron(false);
-      if (!res.success) { batalkan(); return toast('Gagal disimpan', res.message, 'bahaya'); }
+      if (!res.success) {
+        const pulih = pulihkanIsianPoin(cadangan);
+        batalkan();
+        return toast('Gagal disimpan', res.message + (pulih ? ' Isian formulir sudah dikembalikan — periksa, lalu simpan lagi.' : ''), 'bahaya');
+      }
       if (res.terlaluBesar || !res.data) return segarkanData(true);
+
+      if (Number(res.data.emailTerkirim) > 0) {
+        toast('Email terkirim', 'Pemberitahuan Zona Merah dikirim ke ' + res.data.emailTerkirim + ' alamat email.', 'info');
+      }
 
       // Ganti data sementara dengan data resmi dari server
       (res.data.tersimpan || []).forEach(function (resmi, i) {
@@ -3377,11 +3445,43 @@ function simpanCatatanPoin(ev) {
       // Belum pasti (sambungan putus terus sampai percobaan ulang habis): yang
       // tampil ditarik, lalu data dimuat ulang — bila ternyata sudah tersimpan,
       // catatannya kembali muncul dari server.
+      const pulih = pulihkanIsianPoin(cadangan);
       batalkan();
-      if (err && err.takPasti) return kabarBelumPasti(false);
-      toast('Koneksi gagal', 'Catatan dibatalkan: ' + err.message, 'bahaya');
+      if (err && err.takPasti) return kabarBelumPasti(pulih);
+      toast('Koneksi gagal', 'Catatan dibatalkan: ' + err.message +
+        (pulih ? ' Isian formulir sudah dikembalikan — periksa, lalu simpan lagi.' : ''), 'bahaya');
     })
     .simpanPoinBatch(AppState.token, payload);
+}
+
+/**
+ * Kembalikan isian Input Poin sesudah penyimpanan gagal (v3.9), agar guru tidak
+ * perlu mengetik ulang. Tidak menimpa catatan baru yang sudah mulai diisi.
+ * @return {boolean} true bila isian dikembalikan
+ */
+function pulihkanIsianPoin(c) {
+  const kini = AppState.draftPoin;
+  if (kini.nisnTerpilih.length || kini.idJenis || kini.foto) return false;
+  AppState.draftPoin = c.draft;
+  AppState.isianPoinTertunda = c;   // diterapkan renderInputPoin() berikutnya (batalkan() → renderUlang())
+  return true;
+}
+
+/** Isi kembali kolom-kolom formulir Input Poin dari salinan (dipanggil renderInputPoin) */
+function terapkanIsianPoin(c) {
+  const isi = function (id, v) { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; };
+  if (c.draft.idJenis === 'MANUAL') {
+    isi('poinNamaManual', c.namaManual);
+    isi('poinKategoriManual', c.kategoriManual);
+    const cbx = document.getElementById('poinSimpanMaster');
+    if (cbx) cbx.checked = !!c.simpanMaster;
+  }
+  isi('poinNilai', c.nilai);
+  isi('poinTindakan', c.tindakan);
+  isi('poinTanggal', c.tanggal);
+  isi('poinCatatan', c.catatan);
+  hitungDampakPoin();
+  if (typeof perbaruiSaranTindakan === 'function') perbaruiSaranTindakan();
 }
 
 /** Ubah nilai input type=date (yyyy-mm-dd) menjadi dd/mm/yyyy — tanpa jam */
@@ -4011,8 +4111,13 @@ function renderDetailSiswa() {
       '<button class="btn btn-hantu mt-2" onclick="kembaliKe(\'dataSiswa\')">Kembali</button></div>';
     return;
   }
+  if (adaRiwayatLama() && !AppState.riwayatSiswaLengkap[String(s.NISN)]) muatRiwayatSiswa(s.NISN);
+  const memuat = AppState.riwayatSiswaLengkap[String(s.NISN)] === 'memuat';
   el.innerHTML = '<button class="btn btn-hantu btn-kecil mb-3" onclick="kembaliKe(\'dataSiswa\')">' +
-    '<i class="bi bi-arrow-left"></i> Kembali ke Data Siswa</button>' + kartuKarakter(s, true);
+    '<i class="bi bi-arrow-left"></i> Kembali ke Data Siswa</button>' +
+    (memuat ? '<div class="text-secondary-2 mb-2" style="font-size:12.5px"><span class="spinner-border spinner-border-sm me-1"></span> ' +
+      'Memuat catatan yang lebih lama…</div>' : '') +
+    kartuKarakter(s, true);
 }
 
 function renderPortalSiswa() {
@@ -4249,8 +4354,127 @@ function prefillInputPoin(nisn) {
  * Wali kelas tetap sebatas kelas perwaliannya, peran lain melihat seluruhnya.
  */
 function riwayatHalamanRiwayat() {
-  if (isGuruBiasa()) return AppState.riwayat.filter(catatanMilikSaya);
-  return riwayatDalamLingkup();
+  // Catatan lama yang dimuat terpisah (Detail Siswa / pelanggaran berat) belum
+  // berurutan dengan halaman ini — tampil setelah "Muat catatan lebih lama".
+  const urut = function (r) { return !r._lepas; };
+  if (isGuruBiasa()) return AppState.riwayat.filter(function (r) { return urut(r) && catatanMilikSaya(r); });
+  if (lingkupSatuKelas()) {
+    // v3.9 — wali kelas juga melihat catatan yang IA buat untuk siswa kelas lain,
+    // supaya bisa memperbaiki atau menghapusnya sendiri.
+    const kelas = String(AppState.profil.waliKelas).trim().toLowerCase();
+    const nisnKelas = {};
+    AppState.siswa.forEach(function (s) {
+      if (String(s.Kelas || '').trim().toLowerCase() === kelas) nisnKelas[String(s.NISN).trim()] = true;
+    });
+    return AppState.riwayat.filter(function (r) {
+      return urut(r) && (nisnKelas[String(r.NISN).trim()] === true || catatanMilikSaya(r));
+    });
+  }
+  return riwayatDalamLingkup().filter(urut);
+}
+
+/**
+ * Masukkan catatan riwayat dari server ke AppState.riwayat tanpa dobel (v3.9).
+ * lepas = true: catatan lama yang diambil di luar urutan halaman Riwayat
+ * (Detail Siswa, pelanggaran berat). Dipakai Detail Siswa dan deteksi Tindak
+ * Lanjut, tetapi tidak tampil di halaman Riwayat sampai bagiannya dimuat.
+ */
+function gabungRiwayat(daftar, lepas) {
+  const posisi = {};
+  AppState.riwayat.forEach(function (r, i) { posisi[String(r.ID)] = i; });
+  let berubah = false;
+  (daftar || []).forEach(function (r) {
+    const k = String(r.ID);
+    const i = posisi[k];
+    if (i !== undefined) {
+      if (!lepas && AppState.riwayat[i]._lepas) { AppState.riwayat[i] = r; berubah = true; }
+      return;
+    }
+    if (lepas) r._lepas = true;
+    AppState.riwayat.push(r);
+    posisi[k] = AppState.riwayat.length - 1;
+    berubah = true;
+  });
+  // Terbaru di atas, seperti kiriman server (sort bawaan stabil: urutan hari yang sama tetap)
+  if (berubah) AppState.riwayat.sort(function (a, b) { return uraiTanggal(b.Tanggal) - uraiTanggal(a.Tanggal); });
+  return berubah;
+}
+
+/** Masih ada catatan di server yang belum dimuat ke halaman Riwayat? */
+function adaRiwayatLama() { return AppState.riwayatDimuat < AppState.riwayatTotal; }
+
+/**
+ * Tombol "Muat catatan lebih lama" di halaman Riwayat (v3.9).
+ * Server mengirim per 500 catatan sekolah; bagi wali kelas/guru yang isinya
+ * sedikit, dilanjutkan otomatis sampai ada cukup catatan baru (maks. 10 kali).
+ */
+function muatRiwayatLama() {
+  if (AppState.riwayatSedangDimuat || !adaRiwayatLama()) return;
+  AppState.riwayatSedangDimuat = true;
+  const token = AppState.token;
+  let dapat = 0, putaran = 0;
+  renderRiwayat();
+  const langkah = function () {
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (AppState.token !== token) return;
+        if (!res || !res.success) {
+          AppState.riwayatSedangDimuat = false; renderRiwayat();
+          return toast('Gagal memuat', (res && res.message) || 'Coba lagi.', 'bahaya');
+        }
+        const d = res.data || {};
+        gabungRiwayat(d.riwayat || [], false);
+        dapat += (d.riwayat || []).length;
+        AppState.riwayatDimuat = Number(d.sampai) || AppState.riwayatTotal;
+        if (d.total !== undefined) AppState.riwayatTotal = Number(d.total) || 0;
+        putaran++;
+        if (!d.habis && dapat < 100 && putaran < 10) return langkah();
+        AppState.riwayatSedangDimuat = false;
+        AppState.batasRiwayatTampil += 200;
+        if (AppState.halamanAktif === 'riwayat') renderRiwayat();
+        if (!dapat) toast('Tidak ada catatan lain', 'Semua catatan yang dapat Anda lihat sudah tampil.', 'info');
+      })
+      .withFailureHandler(function (err) {
+        if (AppState.token !== token) return;
+        AppState.riwayatSedangDimuat = false;
+        if (AppState.halamanAktif === 'riwayat') renderRiwayat();
+        toast('Gagal memuat', (err && err.message) || 'Periksa sambungan internet, lalu coba lagi.', 'bahaya');
+      })
+      .getRiwayatLama(AppState.token, { mulai: AppState.riwayatDimuat, jumlah: 500 });
+  };
+  langkah();
+}
+
+function tampilkanRiwayatLagi() {
+  AppState.batasRiwayatTampil += 200;
+  renderRiwayat();
+}
+
+/**
+ * Detail Siswa: lengkapi riwayat siswa ini dengan catatan di luar 500 terbaru (v3.9).
+ * Dipanggil sekali per siswa; hasilnya ikut dipakai deteksi Tindak Lanjut.
+ */
+function muatRiwayatSiswa(nisn) {
+  const k = String(nisn);
+  if (!adaRiwayatLama() || AppState.riwayatSiswaLengkap[k]) return false;
+  AppState.riwayatSiswaLengkap[k] = 'memuat';
+  const token = AppState.token;
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (AppState.token !== token) return;
+      if (!res || !res.success) { delete AppState.riwayatSiswaLengkap[k]; return; }
+      AppState.riwayatSiswaLengkap[k] = true;
+      const berubah = gabungRiwayat((res.data && res.data.riwayat) || [], true);
+      if (AppState.halamanAktif === 'detailSiswa' && String(AppState.detailNisn) === k) renderDetailSiswa();
+      else if (berubah) renderMenu();
+    })
+    .withFailureHandler(function () {
+      if (AppState.token !== token) return;
+      delete AppState.riwayatSiswaLengkap[k];
+      if (AppState.halamanAktif === 'detailSiswa' && String(AppState.detailNisn) === k) renderDetailSiswa();
+    })
+    .getRiwayatLama(AppState.token, { nisn: k });
+  return true;
 }
 
 /** Kelas warna nilai poin pada riwayat (0 poin tetap netral) */
@@ -4349,7 +4573,7 @@ function renderRiwayat() {
         '<th>PENCATAT</th>' +
         '<th class="sel-aksi" style="width:118px">AKSI</th>' +
       '</tr></thead><tbody>' +
-      data.slice(0, 200).map(function (r) {
+      data.slice(0, AppState.batasRiwayatTampil).map(function (r) {
         return '<tr>' +
           '<td class="mono" style="font-size:12.5px;white-space:nowrap">' + escHtml(r.Tanggal) + '</td>' +
           // Kelas menempel pada nama siswa — dulu kolom tersendiri selebar 73 px
@@ -4372,16 +4596,34 @@ function renderRiwayat() {
 
       // Di bawah 768 px tabel disembunyikan dan barisnya tampil sebagai kartu
       '<div class="daftar-kartu-riwayat">' +
-        data.slice(0, 200).map(kartuRiwayat).join('') +
+        data.slice(0, AppState.batasRiwayatTampil).map(kartuRiwayat).join('') +
       '</div>'
 
     : '<div class="bungkus-tabel"><div class="kosong"><i class="bi bi-inbox"></i>' +
       '<h6>Belum ada riwayat</h6><p class="mb-0">' +
       (isGuruBiasa() ? 'Catatan poin yang Anda input akan muncul di sini.'
                      : 'Catatan poin akan muncul di sini.') + '</p></div></div>') +
-  (data.length > 200 ? '<p class="text-secondary-2 mt-2" style="font-size:12px">Menampilkan 200 catatan terbaru dari ' + data.length + ' total.</p>' : '');
+  kakiRiwayat(data.length, !!q);
 
   document.getElementById('section-riwayat').innerHTML = html;
+}
+
+/** Bagian bawah halaman Riwayat: tampilkan lebih banyak / muat catatan lama (v3.9) */
+function kakiRiwayat(jumlah, sedangMencari) {
+  const batas = AppState.batasRiwayatTampil;
+  let h = '';
+  if (jumlah > batas) {
+    h += '<p class="text-secondary-2 mt-2 mb-2" style="font-size:12px">Menampilkan ' + batas + ' dari ' + jumlah + ' catatan.</p>' +
+      '<button class="btn btn-hantu btn-kecil" onclick="tampilkanRiwayatLagi()"><i class="bi bi-chevron-down"></i> Tampilkan 200 lagi</button>';
+  } else if (adaRiwayatLama()) {
+    h += '<p class="text-secondary-2 mt-2 mb-2" style="font-size:12px">' +
+      (sedangMencari ? 'Pencarian hanya pada catatan yang sudah dimuat. ' : '') +
+      'Masih ada catatan yang lebih lama di server.</p>' +
+      (AppState.riwayatSedangDimuat
+        ? '<button class="btn btn-hantu btn-kecil" disabled><span class="spinner-border spinner-border-sm me-1"></span> Memuat…</button>'
+        : '<button class="btn btn-hantu btn-kecil" onclick="muatRiwayatLama()"><i class="bi bi-clock-history"></i> Muat catatan lebih lama</button>');
+  }
+  return h;
 }
 
 let timerCariRiwayat;
@@ -6093,7 +6335,7 @@ function kasusPerluTindakLanjut() {
     ? AppState.siswa.filter(function (s) { return String(s.Kelas) === String(AppState.profil.waliKelas); })
     : AppState.siswa;
 
-  const riwayat = riwayatDalamLingkup();
+  const riwayat = riwayatDalamLingkup(true);   // termasuk pelanggaran berat lama (v3.9)
   const kasus = [];
 
   daftarSiswa.forEach(function (s) {
