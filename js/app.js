@@ -60,7 +60,7 @@ const AppState = {
   sedangDisimpan  : {},      // ID rekaman yang perubahannya belum dijawab server
   nomorUbah       : 0,       // bertambah tiap perubahan lokal; muat ulang yang kalah cepat dibuang
   segarkanTertunda: false,   // muat ulang menunggu penyimpanan yang sedang berjalan
-  filter      : { siswa: '', riwayat: '', kelasDipilih: 'SEMUA', zonaDipilih: 'SEMUA' },
+  filter      : { siswa: '', riwayat: '', riwayatDari: '', riwayatSampai: '', kelasDipilih: 'SEMUA', zonaDipilih: 'SEMUA' },
   // Pengaturan halaman Cetak Laporan; bulan = array (kosong berarti seluruh bulan)
   laporan     : {
     mode: 'kelas', kelas: 'SEMUA', kelasSiswa: 'SEMUA',
@@ -1157,12 +1157,32 @@ function renderLembarLainnya(sisa, hitung, angka) {
           ? '<button type="button" class="baris-akun" onclick="tutupLembarLainnya(); bukaUbahPassword()">' +
             '<i class="bi bi-key"></i><span>Ubah Password</span><i class="bi bi-chevron-right ujung"></i></button>'
           : '') +
+        // v3.10 — pasang SIKAP BK sebagai aplikasi (tampil bila peramban mendukung & belum terpasang)
+        '<button type="button" class="baris-akun tombol-instal" onclick="tutupLembarLainnya(); pasangAplikasi()"' +
+          (bisaPasangAplikasi() ? '' : ' hidden') + '>' +
+          '<i class="bi bi-download"></i><span>Instal aplikasi</span><i class="bi bi-chevron-right ujung"></i></button>' +
         '<button type="button" class="baris-akun bahaya" onclick="tutupLembarLainnya(); tanganiLogout()">' +
           '<i class="bi bi-box-arrow-left"></i><span>Keluar</span></button>' +
       '</div>' +
     '</div>';
   perbaruiIkonTema(document.documentElement.getAttribute('data-theme'));
 }
+
+// ── INSTAL APLIKASI (PWA, v3.10) ───────────────────────────────────────
+// pwa.js mengurus tombol ber-atribut data-pwa-install yang ada sejak awal
+// (halaman masuk & sidebar). Tombol di lembar Lainnya dibuat belakangan, jadi
+// keadaannya diatur di sini.
+function bisaPasangAplikasi() { return !!(window.PWA && window.PWA.canInstall); }
+function pasangAplikasi() { if (window.PWA) window.PWA.install(); }
+function perbaruiTombolInstal() {
+  const bisa = bisaPasangAplikasi();
+  document.querySelectorAll('.tombol-instal').forEach(function (el) { el.hidden = !bisa; });
+}
+window.addEventListener('pwa:installable', perbaruiTombolInstal);
+window.addEventListener('pwa:installed', function () {
+  perbaruiTombolInstal();
+  toast('Aplikasi terpasang', 'SIKAP BK kini bisa dibuka dari ikon di layar HP/laptop.', 'sukses');
+});
 
 /** Tandai menu yang sedang dibuka; halaman di dalam "Lainnya" menandai tombol Lainnya */
 function tandaiNavBawah(halaman) {
@@ -3353,7 +3373,9 @@ function simpanCatatanPoin(ev) {
       // Cukup satu catatan yang mendaftarkan jenis baru ke master
       simpanKeMaster: (i === 0) ? simpanKeMaster : false,
       tanggal: tglTampil, catatan: catatan,
-      // Foto bukti dilampirkan ke catatan pertama saja agar tidak berulang di Drive
+      // Foto bukti dikirim SEKALI (catatan pertama) agar tidak berulang di Drive;
+      // v3.10 — server memasang foto yang sama ke semua siswa dalam kiriman ini
+      fotoBersama: !!foto,
       fotoBase64: (i === 0 && foto) ? foto.base64 : null,
       fotoNama:   (i === 0 && foto) ? foto.nama   : null,
       fotoMime:   (i === 0 && foto) ? foto.mime   : null
@@ -4201,9 +4223,13 @@ function kartuKarakter(s, tampilkanAksiGuru) {
   const totalPlus  = plus.reduce(function (a, r) { return a + Number(r.Poin); }, 0);
   const totalMinus = minus.reduce(function (a, r) { return a + Number(r.Poin); }, 0);
 
-  const wali = AppState.guru.filter(function (g) { return String(g.WaliKelas) === String(s.Kelas); })[0];
-  const maksBar = Math.max(Number(s.PoinSaatIni), 120);
-  const persenBar = Math.max(4, Math.min(100, (Number(s.PoinSaatIni) / maksBar) * 100));
+  // Nama kelas dibandingkan tanpa beda spasi/huruf besar, sama seperti lingkupSatuKelas()
+  const kelasSiswa = String(s.Kelas || '').trim().toLowerCase();
+  const wali = AppState.guru.filter(function (g) { return String(g.WaliKelas || '').trim().toLowerCase() === kelasSiswa && kelasSiswa; })[0];
+  // v3.10 — bar penuh pada poin awal (100): siswa tanpa pelanggaran tampil penuh
+  const poinBar = Number(s.PoinSaatIni) || 0;
+  const awalBar = Number(AppState.konfigurasi.poinAwal) || 100;
+  const persenBar = poinBar <= 0 ? 2 : Math.max(4, Math.min(100, (poinBar / awalBar) * 100));
 
   return '' +
   '<div class="card mb-3"><div class="card-body">' +
@@ -4428,7 +4454,9 @@ function muatRiwayatLama() {
         AppState.riwayatDimuat = Number(d.sampai) || AppState.riwayatTotal;
         if (d.total !== undefined) AppState.riwayatTotal = Number(d.total) || 0;
         putaran++;
-        if (!d.habis && dapat < 100 && putaran < 10) return langkah();
+        const dariFilter = rentangTanggalRiwayat().dari;
+        const kurangTanggal = dariFilter && tertuaRiwayatDimuat() >= dariFilter;   // v3.10
+        if (!d.habis && putaran < 40 && (kurangTanggal || (dapat < 100 && putaran < 10))) return langkah();
         AppState.riwayatSedangDimuat = false;
         AppState.batasRiwayatTampil += 200;
         if (AppState.halamanAktif === 'riwayat') renderRiwayat();
@@ -4545,6 +4573,16 @@ function renderRiwayat() {
              String(r.NISN).indexOf(q) !== -1;
     });
   }
+  // v3.10 — saring rentang tanggal kejadian
+  const rentang = rentangTanggalRiwayat();
+  if (rentang.dari || rentang.sampai) {
+    data = data.filter(function (r) {
+      const t = uraiTanggal(r.Tanggal);
+      if (!t) return false;
+      return (!rentang.dari || t >= rentang.dari) && (!rentang.sampai || t <= rentang.sampai);
+    });
+  }
+  const adaSaring = !!(q || rentang.dari || rentang.sampai);
 
   const html =
   '<div class="judul-seksi">' +
@@ -4563,6 +4601,21 @@ function renderRiwayat() {
   '<div class="card mb-3"><div class="card-body">' +
     '<div class="kotak-cari"><i class="bi bi-search"></i>' +
     '<input class="form-control" placeholder="Cari nama siswa, NISN, atau jenis kejadian…" value="' + escHtml(AppState.filter.riwayat) + '" oninput="cariRiwayat(this.value)"></div>' +
+    // v3.10 — filter tanggal
+    '<div class="row g-2 mt-2 align-items-end saring-tanggal">' +
+      '<div class="col-6 col-md-4"><label class="form-label mb-1" for="riwayatDari" style="font-size:12.5px">Dari tanggal</label>' +
+        '<input type="date" class="form-control" id="riwayatDari" value="' + escHtml(AppState.filter.riwayatDari) + '" ' +
+          'max="' + escHtml(AppState.filter.riwayatSampai || '') + '" onchange="saringTanggalRiwayat()"></div>' +
+      '<div class="col-6 col-md-4"><label class="form-label mb-1" for="riwayatSampai" style="font-size:12.5px">Sampai tanggal</label>' +
+        '<input type="date" class="form-control" id="riwayatSampai" value="' + escHtml(AppState.filter.riwayatSampai) + '" ' +
+          'min="' + escHtml(AppState.filter.riwayatDari || '') + '" onchange="saringTanggalRiwayat()"></div>' +
+      '<div class="col-12 col-md-4 d-flex gap-2 flex-wrap">' +
+        '<button type="button" class="btn btn-hantu btn-kecil" onclick="rentangCepatRiwayat(\'bulan\')">Bulan ini</button>' +
+        '<button type="button" class="btn btn-hantu btn-kecil" onclick="rentangCepatRiwayat(\'pekan\')">7 hari</button>' +
+        ((rentang.dari || rentang.sampai)
+          ? '<button type="button" class="btn btn-hantu btn-kecil" onclick="rentangCepatRiwayat(\'\')"><i class="bi bi-x-lg"></i> Hapus</button>' : '') +
+      '</div>' +
+    '</div>' +
   '</div></div>' +
 
   (data.length
@@ -4603,7 +4656,7 @@ function renderRiwayat() {
       '<h6>Belum ada riwayat</h6><p class="mb-0">' +
       (isGuruBiasa() ? 'Catatan poin yang Anda input akan muncul di sini.'
                      : 'Catatan poin akan muncul di sini.') + '</p></div></div>') +
-  kakiRiwayat(data.length, !!q);
+  kakiRiwayat(data.length, adaSaring);
 
   document.getElementById('section-riwayat').innerHTML = html;
 }
@@ -4617,13 +4670,73 @@ function kakiRiwayat(jumlah, sedangMencari) {
       '<button class="btn btn-hantu btn-kecil" onclick="tampilkanRiwayatLagi()"><i class="bi bi-chevron-down"></i> Tampilkan 200 lagi</button>';
   } else if (adaRiwayatLama()) {
     h += '<p class="text-secondary-2 mt-2 mb-2" style="font-size:12px">' +
-      (sedangMencari ? 'Pencarian hanya pada catatan yang sudah dimuat. ' : '') +
+      (sedangMencari ? 'Pencarian dan filter tanggal hanya pada catatan yang sudah dimuat. ' : '') +
       'Masih ada catatan yang lebih lama di server.</p>' +
       (AppState.riwayatSedangDimuat
         ? '<button class="btn btn-hantu btn-kecil" disabled><span class="spinner-border spinner-border-sm me-1"></span> Memuat…</button>'
         : '<button class="btn btn-hantu btn-kecil" onclick="muatRiwayatLama()"><i class="bi bi-clock-history"></i> Muat catatan lebih lama</button>');
   }
   return h;
+}
+
+/** Rentang filter tanggal Riwayat dalam milidetik (tengah malam waktu HP); 0 = tidak dibatasi */
+function rentangTanggalRiwayat() {
+  const ubah = function (v) {
+    const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() : 0;
+  };
+  return { dari: ubah(AppState.filter.riwayatDari), sampai: ubah(AppState.filter.riwayatSampai) };
+}
+
+function saringTanggalRiwayat() {
+  let dari = (document.getElementById('riwayatDari') || {}).value || '';
+  let sampai = (document.getElementById('riwayatSampai') || {}).value || '';
+  if (dari && sampai && dari > sampai) { const t = dari; dari = sampai; sampai = t; }
+  AppState.filter.riwayatDari = dari;
+  AppState.filter.riwayatSampai = sampai;
+  AppState.batasRiwayatTampil = 200;
+  renderRiwayat();
+  muatSampaiTanggalRiwayat();
+}
+
+/** Tombol cepat: 'bulan' (bulan ini), 'pekan' (7 hari terakhir), '' (hapus filter) */
+function rentangCepatRiwayat(jenis) {
+  const iso = function (d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+  const kini = new Date();
+  if (jenis === 'bulan') {
+    AppState.filter.riwayatDari = iso(new Date(kini.getFullYear(), kini.getMonth(), 1));
+    AppState.filter.riwayatSampai = iso(kini);
+  } else if (jenis === 'pekan') {
+    AppState.filter.riwayatDari = iso(new Date(kini.getFullYear(), kini.getMonth(), kini.getDate() - 6));
+    AppState.filter.riwayatSampai = iso(kini);
+  } else {
+    AppState.filter.riwayatDari = ''; AppState.filter.riwayatSampai = '';
+  }
+  AppState.batasRiwayatTampil = 200;
+  renderRiwayat();
+  muatSampaiTanggalRiwayat();
+}
+
+/**
+ * Filter "Dari tanggal" lebih tua dari catatan tertua yang sudah dimuat →
+ * catatan lama diambil otomatis dari server sampai tanggal itu tercakup.
+ */
+function muatSampaiTanggalRiwayat() {
+  const dari = rentangTanggalRiwayat().dari;
+  if (!dari || !adaRiwayatLama() || AppState.riwayatSedangDimuat) return;
+  if (tertuaRiwayatDimuat() < dari) return;
+  muatRiwayatLama();
+}
+
+/** Tanggal catatan tertua dalam urutan halaman Riwayat yang sudah dimuat */
+function tertuaRiwayatDimuat() {
+  let min = Infinity;
+  AppState.riwayat.forEach(function (r) {
+    if (r._lepas || r._menunggu) return;
+    const t = uraiTanggal(r.Tanggal);
+    if (t && t < min) min = t;
+  });
+  return min;
 }
 
 let timerCariRiwayat;

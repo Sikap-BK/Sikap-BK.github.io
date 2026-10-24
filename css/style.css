@@ -1500,3 +1500,7 @@ table.tabel.tabel-riwayat .kol-pencatat { max-width: 150px; font-size: 12.5px; l
   .sidebar, .topbar, .judul-seksi .aksi, .btn { display: none !important; }
   .main-content { margin-left: 0; }
 }
+
+/* ── v3.10 — PWA: banner "Versi baru" tidak menutupi menu bawah HP ── */
+.ada-nav-bawah .pwa-bar { bottom: calc(84px + env(safe-area-inset-bottom)) !important; }
+[data-pwa-install][hidden], .tombol-instal[hidden] { display: none !important; }
