@@ -1504,3 +1504,6 @@ table.tabel.tabel-riwayat .kol-pencatat { max-width: 150px; font-size: 12.5px; l
 /* ── v3.10 — PWA: banner "Versi baru" tidak menutupi menu bawah HP ── */
 .ada-nav-bawah .pwa-bar { bottom: calc(84px + env(safe-area-inset-bottom)) !important; }
 [data-pwa-install][hidden], .tombol-instal[hidden] { display: none !important; }
+/* v3.11 — kotak info berwarna hijau (status jadwal pengingat) */
+.kotak-info.sukses { border-left-color: var(--hijau-line); background: var(--hijau-bg); color: var(--hijau-tx); }
+.kotak-info.sukses i { color: var(--hijau-tx); }

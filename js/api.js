@@ -71,6 +71,10 @@ const API_ARGUMEN = {
   simpanKonfigurasi         : ['token', 'perubahan'],
   unggahBerkas              : ['token', 'kategori', 'base64', 'namaFile', 'mime'],
   ujiNotifikasiEmail        : ['token', 'tujuan'],
+  // v3.11 — email tindak lanjut & format email
+  aturPengingatTL           : ['token', 'opsi'],
+  jalankanPengingatSekarang : ['token'],
+  ujiTemplatEmail           : ['token', 'opsi'],
   buatLaporanPDF            : ['token', 'opsi'],
   buatLaporanPendampinganPDF: ['token', 'opsi'],
   buatSuratPDF              : ['token', 'opsi'],

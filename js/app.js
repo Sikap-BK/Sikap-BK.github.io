@@ -33,7 +33,8 @@ const AppState = {
   riwayatSiswaLengkap: {},
   riwayatSedangDimuat: false,
   batasRiwayatTampil: 200,
-  isianPoinTertunda: null,   // v3.9 — isian Input Poin yang dikembalikan sesudah gagal simpan
+  isianPoinTertunda: null,
+  tplDipilih: '', tplFokus: 'tplIsi', tplEmailUji: '',   // v3.11 — editor Format Email   // v3.9 — isian Input Poin yang dikembalikan sesudah gagal simpan
   kelas       : [],
   tindakLanjut : [],
   evaluasi     : [],
@@ -8464,7 +8465,7 @@ function renderPengaturan() {
         '<div class="card-body">' +
           '<div class="form-check form-switch mb-3">' +
             '<input class="form-check-input" type="checkbox" id="setNotif"' + (String(c.notifikasiEmail).toUpperCase() === 'AKTIF' ? ' checked' : '') + '>' +
-            '<label class="form-check-label" for="setNotif">Aktifkan notifikasi email otomatis ke wali kelas</label></div>' +
+            '<label class="form-check-label" for="setNotif">Aktifkan email Zona Merah ke wali kelas &amp; Guru BK</label></div>' +
           '<div class="mb-3"><label class="form-label">Kirim email uji ke</label>' +
             '<div class="input-group"><input class="form-control" id="setEmailUji" placeholder="alamat@email.com">' +
             '<button class="btn btn-hantu" onclick="kirimEmailUji(event)">Kirim</button></div></div>' +
@@ -8472,6 +8473,10 @@ function renderPengaturan() {
           '<div class="kotak-info peringatan mt-3"><i class="bi bi-exclamation-triangle"></i><div>' +
             'Pastikan setiap wali kelas memiliki alamat email pada menu <b>Data Guru</b> agar notifikasi terkirim.</div></div>' +
         '</div></div>' +
+
+      // v3.11 — email tindak lanjut & format email
+      kartuEmailTindakLanjut(c) +
+      kartuFormatEmail(c) +
 
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-shield-lock"></i> Keamanan Admin</h5>' +
         '<p class="sub">Kredensial masuk untuk peran Administrator</p></div></div>' +
@@ -8503,6 +8508,7 @@ function renderPengaturan() {
   '</div>';
 
   document.getElementById('section-pengaturan').innerHTML = html + kartuPengaturanKop();
+  pratinjauTemplatEmail();   // v3.11
   renderPengaturanKop();
 }
 
@@ -9076,6 +9082,268 @@ function kartuLogo(kategori, judul, keterangan, url) {
     (url ? '<button class="btn btn-hantu btn-kecil w-100 mt-1" onclick="pratinjau(\'' + escHtml(url) +
       '\',\'' + escHtml(judul) + '\',\'gambar\')"><i class="bi bi-eye"></i> Lihat</button>' : '') +
   '</div>';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PENGATURAN EMAIL TINDAK LANJUT & FORMAT EMAIL (Admin, v3.11)
+// ════════════════════════════════════════════════════════════════════
+
+/** Kartu "Email Tindak Lanjut": email siswa baru perlu ditindaklanjuti + pengingat terjadwal */
+function kartuEmailTindakLanjut(c) {
+  const st = c.statusPengingat || {};
+  const pengingatAktif = String(c.pengingatTL).toUpperCase() === 'AKTIF';
+  const jam = Number(c.pengingatTLJam) || 7;
+  const opsiJam = [];
+  for (let h = 5; h <= 20; h++) opsiJam.push('<option value="' + h + '"' + (h === jam ? ' selected' : '') + '>' + pad2(h) + '.00</option>');
+  const saklar = function (id, aktif, label) {
+    return '<div class="form-check form-switch mb-2">' +
+      '<input class="form-check-input" type="checkbox" id="' + id + '"' + (aktif ? ' checked' : '') + '>' +
+      '<label class="form-check-label" for="' + id + '">' + label + '</label></div>';
+  };
+  let status;
+  if (!pengingatAktif) {
+    status = '<div class="kotak-info mb-3"><i class="bi bi-info-circle"></i><div>Pengingat terjadwal sedang <b>nonaktif</b>.</div></div>';
+  } else if (st.terpasang) {
+    status = '<div class="kotak-info sukses mb-3"><i class="bi bi-check-circle"></i><div>Jadwal aktif: diperiksa <b>setiap hari pukul ' +
+      pad2(jam) + '.00</b>.</div></div>';
+  } else {
+    status = '<div class="kotak-info peringatan mb-3"><i class="bi bi-exclamation-triangle"></i><div>' +
+      '<b>Jadwal pengingat belum terpasang.</b> Pemilik Apps Script perlu memberi izin sekali: buka editor Apps Script, ' +
+      'pilih fungsi <span class="mono">aktifkanPengingatTL</span>, klik <b>Jalankan</b>, setujui izinnya, lalu tekan Simpan di sini.</div></div>';
+  }
+  return '<div class="card"><div class="card-header"><div><h5><i class="bi bi-bell"></i> Email Tindak Lanjut</h5>' +
+    '<p class="sub">Kabar ke Guru BK saat ada siswa perlu dibina, dan pengingat bila belum ditindaklanjuti</p></div></div>' +
+    '<div class="card-body">' +
+      saklar('setNotifTL', String(c.notifTLBaru).toUpperCase() === 'AKTIF',
+        'Kirim email ke Guru BK saat ada siswa <b>baru</b> perlu ditindaklanjuti') +
+      '<div class="pemisah"></div>' +
+      saklar('setPengingatTL', pengingatAktif, 'Kirim <b>pengingat</b> bila siswa belum ditindaklanjuti') +
+      '<div class="row g-2 mt-1">' +
+        '<div class="col-6"><label class="form-label" for="setPengingatHari">Setelah (hari)</label>' +
+          '<input type="number" min="1" max="60" class="form-control mono" id="setPengingatHari" value="' + escHtml(c.pengingatTLHari || 3) + '"></div>' +
+        '<div class="col-6"><label class="form-label" for="setPengingatJam">Jam kirim</label>' +
+          '<select class="form-select" id="setPengingatJam">' + opsiJam.join('') + '</select></div>' +
+      '</div>' +
+      '<div class="form-text mb-2">Pengingat diulang setiap jumlah hari yang sama selama siswa belum memiliki sesi pembinaan.</div>' +
+      saklar('setPengingatWali', String(c.pengingatTLWali).toLowerCase() === 'ya', 'Kirim pengingat juga ke <b>wali kelas</b> siswa') +
+      '<div class="mt-2">' + input2('Alamat aplikasi (untuk tautan di email)', 'setAlamatAplikasi', c.alamatAplikasi || 'https://sikap-bk.github.io') + '</div>' +
+      status +
+      '<button class="btn btn-navy w-100 mb-2" onclick="simpanEmailTindakLanjut(event)"><i class="bi bi-save"></i> Simpan Pengaturan Email Tindak Lanjut</button>' +
+      '<button class="btn btn-hantu w-100" onclick="kirimPengingatSekarang(event)"><i class="bi bi-send"></i> Kirim Pengingat Sekarang</button>' +
+      '<div class="kotak-info peringatan mt-3"><i class="bi bi-exclamation-triangle"></i><div>' +
+        'Isi alamat email Guru BK (dan wali kelas) di menu <b>Data Guru</b>. Akun Gmail biasa dapat mengirim sekitar ' +
+        '<b>100 email per hari</b>.</div></div>' +
+    '</div></div>';
+}
+
+/** Kartu "Format Email": Admin mengubah subjek & isi setiap jenis email */
+function kartuFormatEmail(c) {
+  const daftar = c.templatEmail || {};
+  const kunci = Object.keys(daftar);
+  if (!kunci.length) return '';
+  if (!daftar[AppState.tplDipilih]) AppState.tplDipilih = kunci[0];
+  return '<div class="card"><div class="card-header"><div><h5><i class="bi bi-envelope-paper"></i> Format Email</h5>' +
+    '<p class="sub">Atur kalimat email untuk Guru BK dan wali kelas</p></div></div>' +
+    '<div class="card-body">' +
+      '<label class="form-label" for="tplJenis">Jenis email</label>' +
+      '<select class="form-select mb-3" id="tplJenis" onchange="pilihTemplatEmail(this.value)">' +
+        kunci.map(function (k) {
+          return '<option value="' + k + '"' + (k === AppState.tplDipilih ? ' selected' : '') + '>' + escHtml(daftar[k].label) + '</option>';
+        }).join('') +
+      '</select>' +
+      '<div id="editorTemplat">' + isiEditorTemplat(AppState.tplDipilih) + '</div>' +
+    '</div></div>';
+}
+
+function isiEditorTemplat(k) {
+  const t = AppState.konfigurasi.templatEmail[k];
+  return '<p class="text-secondary-2 mb-3" style="font-size:12.5px"><i class="bi bi-info-circle"></i> ' + escHtml(t.keterangan) + '</p>' +
+    '<label class="form-label" for="tplSubjek">Subjek</label>' +
+    '<input class="form-control mb-3" id="tplSubjek" value="' + escHtml(t.subjek) + '" ' +
+      'oninput="pratinjauTemplatEmail()" onfocus="AppState.tplFokus=\'tplSubjek\'">' +
+    '<label class="form-label" for="tplIsi">Isi email</label>' +
+    '<textarea class="form-control mb-2" id="tplIsi" rows="11" style="font-size:13.5px;line-height:1.5" ' +
+      'oninput="pratinjauTemplatEmail()" onfocus="AppState.tplFokus=\'tplIsi\'">' + escHtml(t.isi) + '</textarea>' +
+    '<div class="label-kecil mb-1">Sisipkan data otomatis (ketuk)</div>' +
+    '<div class="d-flex flex-wrap gap-1 mb-3">' +
+      t.penanda.map(function (p) {
+        return '<button type="button" class="btn btn-hantu btn-mini" title="' + escHtml(p[1]) + '" ' +
+          'onclick="sisipPenandaEmail(\'{' + p[0] + '}\')"><span class="mono">{' + escHtml(p[0]) + '}</span></button>';
+      }).join('') +
+    '</div>' +
+    '<div class="form-text mb-2">Penanda di atas diganti otomatis saat email dikirim. <span class="mono">{data_siswa}</span> ' +
+      'menjadi tabel data siswa — bila dihapus, tabel tetap disisipkan di akhir email.</div>' +
+    '<div class="label-kecil mb-1">Pratinjau</div>' +
+    '<div id="tplPratinjau" class="mb-3"></div>' +
+    '<div class="d-flex gap-2 mb-3">' +
+      '<button class="btn btn-navy flex-fill" onclick="simpanTemplatEmail()"><i class="bi bi-save"></i> Simpan Format</button>' +
+      '<button class="btn btn-hantu" onclick="kembalikanTemplatEmail()" title="Kembalikan tulisan bawaan"><i class="bi bi-arrow-counterclockwise"></i> Bawaan</button>' +
+    '</div>' +
+    '<label class="form-label" for="tplEmailUji">Kirim contoh email ini ke</label>' +
+    '<div class="input-group"><input class="form-control" id="tplEmailUji" placeholder="alamat@email.com" value="' +
+      escHtml(AppState.tplEmailUji || '') + '">' +
+      '<button class="btn btn-hantu" onclick="kirimContohTemplatEmail(event)"><i class="bi bi-send"></i> Kirim</button></div>';
+}
+
+function pilihTemplatEmail(k) {
+  if (!AppState.konfigurasi.templatEmail || !AppState.konfigurasi.templatEmail[k]) return;
+  AppState.tplDipilih = k;
+  AppState.tplFokus = 'tplIsi';
+  const el = document.getElementById('editorTemplat');
+  if (el) el.innerHTML = isiEditorTemplat(k);
+  pratinjauTemplatEmail();
+}
+
+function sisipPenandaEmail(teks) {
+  const el = document.getElementById(AppState.tplFokus || 'tplIsi') || document.getElementById('tplIsi');
+  if (!el) return;
+  const a = el.selectionStart === undefined || el.selectionStart === null ? el.value.length : el.selectionStart;
+  const b = el.selectionEnd === undefined || el.selectionEnd === null ? a : el.selectionEnd;
+  el.value = el.value.slice(0, a) + teks + el.value.slice(b);
+  el.focus();
+  try { el.setSelectionRange(a + teks.length, a + teks.length); } catch (e) {}
+  pratinjauTemplatEmail();
+}
+
+/** Pratinjau di layar — disusun sama seperti email sungguhan (Kode.gs: susunEmail_), dengan data contoh */
+function pratinjauTemplatEmail() {
+  const wadah = document.getElementById('tplPratinjau');
+  const k = AppState.tplDipilih;
+  const t = (AppState.konfigurasi.templatEmail || {})[k];
+  if (!wadah || !t) return;
+  const subjek = (document.getElementById('tplSubjek') || {}).value || t.bawaanSubjek;
+  const isi = (document.getElementById('tplIsi') || {}).value || t.bawaanIsi;
+  const c = AppState.konfigurasi;
+  const contoh = {
+    nama_penerima: 'Nama Guru', sekolah: c.namaSekolah || 'Nama Sekolah', tanggal: tanggalHariIniTampil(),
+    alamat_aplikasi: c.alamatAplikasi || 'https://sikap-bk.github.io',
+    nama_siswa: 'Nama Siswa Contoh', nisn: '0012345678', kelas: 'VIII A', poin: '25', kejadian: 'Berkelahi',
+    batas_merah: c.batasMerah || 30, jumlah_siswa: '1', hari: c.pengingatTLHari || 3
+  };
+  const sel = 'padding:6px 8px;border:1px solid #E2E8F0;font-size:12px;';
+  const tabel = '<table style="width:100%;border-collapse:collapse;margin:6px 0;color:#1A1A2E;background:#fff">' +
+    '<tr><td style="' + sel + 'background:#F8FAFC;width:38%">Nama Siswa</td><td style="' + sel + '">Nama Siswa Contoh</td></tr>' +
+    '<tr><td style="' + sel + 'background:#F8FAFC">Kelas</td><td style="' + sel + '">VIII A</td></tr>' +
+    '<tr><td style="' + sel + 'background:#F8FAFC">Poin / Zona</td><td style="' + sel + '"><b style="color:#991B1B">25</b> · Merah</td></tr>' +
+    '<tr><td style="' + sel + 'background:#F8FAFC">Alasan</td><td style="' + sel + '">Pelanggaran berat: Berkelahi (-50)</td></tr></table>';
+  const ganti = function (teks, html) {
+    let h = html ? escHtml(teks).replace(/\r?\n/g, '<br>') : teks;
+    h = h.replace(/\{([a-z_]+)\}/g, function (utuh, nama) {
+      if (nama === 'data_siswa') return html ? tabel : '';
+      if (Object.prototype.hasOwnProperty.call(contoh, nama)) return html ? escHtml(String(contoh[nama])) : String(contoh[nama]);
+      return utuh;
+    });
+    return h;
+  };
+  let badan = ganti(isi, true);
+  if (isi.indexOf('{data_siswa}') === -1) badan += '<br><br>' + tabel;
+  const w = t.warna || ['#FEE2E2', '#991B1B'];
+  wadah.innerHTML =
+    '<div style="border:1px solid var(--border-color,#E2E8F0);border-radius:10px;overflow:hidden;background:#fff;color:#1A1A2E">' +
+      '<div style="padding:8px 12px;font-size:12px;background:#F1F5F9;color:#334155"><b>Subjek:</b> ' + escHtml(ganti(subjek, false)) + '</div>' +
+      '<div style="background:#1E3A5F;color:#fff;padding:10px 12px;font-size:13px;font-weight:700">' + escHtml(contoh.sekolah) + '</div>' +
+      '<div style="padding:12px">' +
+        '<div style="background:' + w[0] + ';color:' + w[1] + ';padding:8px 10px;border-radius:6px;font-weight:700;font-size:12px;margin-bottom:10px">' +
+          escHtml(t.pita || '') + '</div>' +
+        '<div style="font-size:13px;line-height:1.55">' + badan + '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+function tanggalHariIniTampil() {
+  const d = new Date();
+  return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
+function simpanTemplatEmail() {
+  const k = AppState.tplDipilih;
+  const t = AppState.konfigurasi.templatEmail[k];
+  let subjek = document.getElementById('tplSubjek').value.trim();
+  let isi = document.getElementById('tplIsi').value.trim();
+  if (!subjek) subjek = t.bawaanSubjek;
+  if (!isi) isi = t.bawaanIsi;
+  if (isi.length > 5000) return toast('Terlalu panjang', 'Isi email paling banyak 5.000 huruf.', 'peringatan');
+  const perubahan = {};
+  // Sama dengan bawaan → disimpan kosong, supaya ikut perbaikan tulisan bawaan di versi berikutnya
+  perubahan['emailTpl_' + k + '_subjek'] = subjek === t.bawaanSubjek ? '' : subjek;
+  perubahan['emailTpl_' + k + '_isi'] = isi === t.bawaanIsi ? '' : isi;
+  const lama = { subjek: t.subjek, isi: t.isi };
+  t.subjek = subjek; t.isi = isi;
+  simpanPengaturanKe(perubahan, 'Format email "' + t.label + '" disimpan.');
+  // Bila server menolak, simpanPengaturanKe mengembalikan konfigurasi — tulisan di editor ikut dikembalikan
+  setTimeout(function () {
+    if (AppState.konfigurasi['emailTpl_' + k + '_isi'] !== perubahan['emailTpl_' + k + '_isi']) { t.subjek = lama.subjek; t.isi = lama.isi; }
+  }, 15000);
+}
+
+function kembalikanTemplatEmail() {
+  const t = AppState.konfigurasi.templatEmail[AppState.tplDipilih];
+  document.getElementById('tplSubjek').value = t.bawaanSubjek;
+  document.getElementById('tplIsi').value = t.bawaanIsi;
+  pratinjauTemplatEmail();
+  toast('Tulisan bawaan dipasang', 'Tekan Simpan Format untuk memakainya.', 'info');
+}
+
+function kirimContohTemplatEmail(ev) {
+  const tujuan = document.getElementById('tplEmailUji').value.trim();
+  if (!tujuan) return toast('Belum diisi', 'Masukkan alamat email tujuan.', 'peringatan');
+  AppState.tplEmailUji = tujuan;
+  const pulih = tombolSibuk(ev && ev.currentTarget, 'Mengirim…');
+  tandaSinkron(true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      pulih(); tandaSinkron(false);
+      toast(res.success ? 'Terkirim' : 'Gagal', res.message, res.success ? 'sukses' : 'bahaya');
+    })
+    .withFailureHandler(function (err) { pulih(); tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
+    .ujiTemplatEmail(AppState.token, {
+      kunci: AppState.tplDipilih, tujuan: tujuan,
+      subjek: document.getElementById('tplSubjek').value, isi: document.getElementById('tplIsi').value
+    });
+}
+
+function simpanEmailTindakLanjut(ev) {
+  const hari = Math.round(Number(document.getElementById('setPengingatHari').value));
+  if (!(hari >= 1 && hari <= 60)) return toast('Nilai tidak valid', 'Jumlah hari pengingat harus 1–60.', 'peringatan');
+  const opsi = {
+    notifTLBaru: document.getElementById('setNotifTL').checked,
+    pengingatTL: document.getElementById('setPengingatTL').checked,
+    pengingatTLHari: hari,
+    pengingatTLJam: Number(document.getElementById('setPengingatJam').value),
+    pengingatTLWali: document.getElementById('setPengingatWali').checked,
+    alamatAplikasi: document.getElementById('setAlamatAplikasi').value.trim()
+  };
+  const pulih = tombolSibuk(ev && ev.currentTarget, 'Menyimpan…');
+  tandaSinkron(true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      pulih(); tandaSinkron(false);
+      if (!res || !res.success) return toast('Gagal disimpan', (res && res.message) || 'Server menolak permintaan.', 'bahaya');
+      Object.assign(AppState.konfigurasi, res.data.konfigurasi);
+      AppState.konfigurasi.statusPengingat = res.data.statusPengingat;
+      if (AppState.halamanAktif === 'pengaturan') renderPengaturan();
+      toast(/BELUM/.test(res.message) ? 'Tersimpan — perlu satu langkah lagi' : 'Tersimpan', res.message,
+        /BELUM/.test(res.message) ? 'peringatan' : 'sukses');
+    })
+    .withFailureHandler(function (err) { pulih(); tandaSinkron(false); toast('Gagal disimpan', err.message, 'bahaya'); })
+    .aturPengingatTL(AppState.token, opsi);
+}
+
+function kirimPengingatSekarang(ev) {
+  const tombol = ev && ev.currentTarget;
+  konfirmasi('Kirim Pengingat Sekarang',
+    'Email pengingat akan dikirim ke Guru BK (dan wali kelas bila diaktifkan) untuk SEMUA siswa yang belum ditindaklanjuti, ' +
+    'tanpa menunggu batas hari. Lanjutkan?', function () {
+      const pulih = tombolSibuk(tombol, 'Mengirim…');
+      tandaSinkron(true);
+      google.script.run
+        .withSuccessHandler(function (res) {
+          pulih(); tandaSinkron(false);
+          toast(res.success ? 'Selesai' : 'Gagal', res.message, res.success ? 'sukses' : 'bahaya');
+        })
+        .withFailureHandler(function (err) { pulih(); tandaSinkron(false); toast('Error', err.message, 'bahaya'); })
+        .jalankanPengingatSekarang(AppState.token);
+    }, 'Kirim');
 }
 
 function input2(label, id, nilai, tipe, placeholder) {
