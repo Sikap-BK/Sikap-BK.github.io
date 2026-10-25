@@ -5,7 +5,7 @@
    • Update berversi       → naikkan VERSION (pakai scripts/bump_version.py)
    Letakkan file ini di ROOT aplikasi (satu folder dengan index.html).
    ========================================================================== */
-const VERSION = 'sikap-bk-v3.11.0';            // ← NAIKKAN setiap kali file frontend berubah
+const VERSION = 'sikap-bk-v3.12.0';            // ← NAIKKAN setiap kali file frontend berubah
 const SPA = true;                        // true = 1 halaman (routing #), false = banyak halaman .html
 const OFFLINE_PAGE = 'offline.html';     // cadangan bila halaman belum pernah di-cache
 
@@ -15,11 +15,11 @@ const SHELL = [
   'index.html',
   'manifest.webmanifest',
   'offline.html',
-  'pwa.js?v=3.11.0',
-  'css/style.css?v=3.11.0',
-  'js/config.js?v=3.11.0',
-  'js/api.js?v=3.11.0',
-  'js/app.js?v=3.11.0',
+  'pwa.js?v=3.12.0',
+  'css/style.css?v=3.12.0',
+  'js/config.js?v=3.12.0',
+  'js/api.js?v=3.12.0',
+  'js/app.js?v=3.12.0',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/maskable-512.png',

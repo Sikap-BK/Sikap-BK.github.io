@@ -1507,3 +1507,18 @@ table.tabel.tabel-riwayat .kol-pencatat { max-width: 150px; font-size: 12.5px; l
 /* v3.11 — kotak info berwarna hijau (status jadwal pengingat) */
 .kotak-info.sukses { border-left-color: var(--hijau-line); background: var(--hijau-bg); color: var(--hijau-tx); }
 .kotak-info.sukses i { color: var(--hijau-tx); }
+/* v3.12 — sub-menu Pengaturan: tiga tab */
+.tab-jalur.tab-pengaturan { grid-template-columns: repeat(3, 1fr); max-width: 640px; }
+@media (max-width: 575.98px) {
+  .tab-jalur.tab-pengaturan button { flex-direction: column; gap: 2px; font-size: 12px; padding: 8px 4px; text-align: center; line-height: 1.2; }
+}
+
+/* v3.12 — Link login siswa: hanya formulir siswa, tanpa pilihan Admin/Guru */
+.login-siswa-saja .tab-peran { display: none !important; }
+.label-mode-siswa {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--bg-surface-2); color: var(--text-primary); font-weight: 600; font-size: 14px;
+  padding: 11px 12px; border-radius: var(--r-md); margin-bottom: var(--s-lg);
+}
+.label-mode-siswa[hidden] { display: none; }
+.label-mode-siswa i { color: var(--gold); }

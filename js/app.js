@@ -34,6 +34,7 @@ const AppState = {
   riwayatSedangDimuat: false,
   batasRiwayatTampil: 200,
   isianPoinTertunda: null,
+  tabPengaturan: 'umum',   // v3.12 — sub-menu Pengaturan
   tplDipilih: '', tplFokus: 'tplIsi', tplEmailUji: '',   // v3.11 — editor Format Email   // v3.9 — isian Input Poin yang dikembalikan sesudah gagal simpan
   kelas       : [],
   tindakLanjut : [],
@@ -154,6 +155,13 @@ document.addEventListener('DOMContentLoaded', function () {
   pasangCentangIngat();
   try {
     const peranAlamat = new URLSearchParams(window.location.search).get('peran');
+    // v3.12 — link login siswa yang dibagikan ke orang tua: HANYA login siswa
+    if (peranAlamat === 'siswa') {
+      AppState.loginSiswaSaja = true;
+      document.getElementById('layarLogin').classList.add('login-siswa-saja');
+      const lbl = document.getElementById('labelModeSiswa');
+      if (lbl) lbl.hidden = false;
+    }
     if (['admin', 'guru', 'siswa'].indexOf(peranAlamat) !== -1) pilihPeran(peranAlamat);
   } catch (e) { /* peramban sangat lama — abaikan */ }
 
@@ -255,6 +263,7 @@ function perbaruiIkonTema(tema) {
 // ════════════════════════════════════════════════════════════════════
 
 function pilihPeran(peran) {
+  if (AppState.loginSiswaSaja) peran = 'siswa';      // v3.12 — link login siswa
   AppState.peranLogin = peran;
   document.querySelectorAll('.tab-peran button').forEach(function (b) {
     b.classList.toggle('aktif', b.dataset.peran === peran);
@@ -273,6 +282,7 @@ function tampilGalatLogin(pesan) {
 
 function tanganiLogin(ev) {
   ev.preventDefault();
+  if (AppState.loginSiswaSaja) AppState.peranLogin = 'siswa';   // v3.12
   const peran = AppState.peranLogin;
   let username = '', password = '';
 
@@ -8391,13 +8401,10 @@ function cetakSurat(modal) {
 
 function renderPengaturan() {
   const c = AppState.konfigurasi;
-  const html =
-  '<div class="judul-seksi">' +
-    '<div><h2>Pengaturan Aplikasi</h2><p>Identitas sekolah, ambang zona, keamanan, dan notifikasi email.</p></div>' +
-  '</div>' +
+  // v3.12 — Pengaturan dibagi tiga sub-menu (tab): Umum, Kop Surat, Notifikasi & Email
+  const tab = ['umum', 'kop', 'email'].indexOf(AppState.tabPengaturan) !== -1 ? AppState.tabPengaturan : 'umum';
 
-  '<div class="grid-2">' +
-
+  const kIdentitas =
     '<div class="card"><div class="card-header"><div><h5><i class="bi bi-building"></i> Identitas Sekolah</h5>' +
       '<p class="sub">Tampil pada kop seluruh laporan</p></div></div>' +
       '<div class="card-body">' +
@@ -8419,8 +8426,14 @@ function renderPengaturan() {
         '</div>' +
         input2('Kota Penandatanganan', 'setKota', c.kotaCetak) +
 
-        '<div class="pemisah"></div>' +
-        '<div class="label-kecil mb-2">Logo pada Kop Laporan</div>' +
+        '<button class="btn btn-navy w-100" onclick="simpanIdentitas()"><i class="bi bi-save"></i> Simpan Identitas</button>' +
+      '</div></div>' +
+
+    '';
+  const kLogo =
+    '<div class="card"><div class="card-header"><div><h5><i class="bi bi-image"></i> Logo pada Kop</h5>' +
+      '<p class="sub">Tercetak di kiri dan kanan kop laporan &amp; surat</p></div></div>' +
+      '<div class="card-body">' +
         '<div class="grid-2" style="gap:var(--s-sm)">' +
           kartuLogo('logo', 'Logo Sekolah', 'Tercetak di sisi KANAN kop', c.logoUrl) +
           kartuLogo('logoInstansi', 'Logo Dinas / Yayasan', 'Tercetak di sisi KIRI kop', c.logoInstansiUrl) +
@@ -8429,13 +8442,11 @@ function renderPengaturan() {
           'Gunakan gambar persegi berlatar transparan (PNG) agar tajam saat dicetak. Ukuran ideal 300&times;300 px.' +
         '</div></div>' +
 
-        '<button class="btn btn-navy w-100" onclick="simpanIdentitas()"><i class="bi bi-save"></i> Simpan Identitas</button>' +
-      '</div></div>' +
-
-    '<div class="tumpuk">' +
+      '</div></div>';
+  const kLinkSiswa =
       // v3.7 — bagikan link login siswa lewat QR code
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-qr-code"></i> Link Login Siswa</h5>' +
-        '<p class="sub">Siswa memindai QR, halaman login langsung terbuka di pilihan Siswa</p></div></div>' +
+        '<p class="sub">Untuk siswa &amp; orang tua — link ini hanya menampilkan login siswa</p></div></div>' +
         '<div class="card-body">' +
           '<div class="kotak-cari mb-2"><i class="bi bi-link-45deg"></i>' +
             '<input class="form-control mono" id="setLinkSiswa" readonly value="' + escHtml(alamatLoginSiswa()) + '" ' +
@@ -8446,6 +8457,8 @@ function renderPengaturan() {
           '</div>' +
         '</div></div>' +
 
+    '';
+  const kAmbang =
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-sliders"></i> Ambang Zona &amp; Poin</h5>' +
         '<p class="sub">Menentukan klasifikasi warna status siswa</p></div></div>' +
         '<div class="card-body">' +
@@ -8460,6 +8473,8 @@ function renderPengaturan() {
           '<button class="btn btn-navy w-100" onclick="simpanAmbang()"><i class="bi bi-save"></i> Simpan Ambang Zona</button>' +
         '</div></div>' +
 
+    '';
+  const kNotifZona =
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-envelope-at"></i> Notifikasi Email</h5>' +
         '<p class="sub">Peringatan otomatis saat siswa masuk zona merah</p></div></div>' +
         '<div class="card-body">' +
@@ -8474,10 +8489,8 @@ function renderPengaturan() {
             'Pastikan setiap wali kelas memiliki alamat email pada menu <b>Data Guru</b> agar notifikasi terkirim.</div></div>' +
         '</div></div>' +
 
-      // v3.11 — email tindak lanjut & format email
-      kartuEmailTindakLanjut(c) +
-      kartuFormatEmail(c) +
-
+    '';
+  const kKeamanan =
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-shield-lock"></i> Keamanan Admin</h5>' +
         '<p class="sub">Kredensial masuk untuk peran Administrator</p></div></div>' +
         '<div class="card-body">' +
@@ -8494,6 +8507,8 @@ function renderPengaturan() {
             'Segera ganti password default <span class="mono">admin123</span> demi keamanan data siswa.</div></div>' +
         '</div></div>' +
 
+    '';
+  const kTatib =
       '<div class="card"><div class="card-header"><div><h5><i class="bi bi-file-earmark-pdf"></i> Dokumen Tata Tertib</h5></div></div>' +
         '<div class="card-body">' +
           (c.tatibUrl ?
@@ -8504,12 +8519,47 @@ function renderPengaturan() {
             : '<div class="kotak-info peringatan mb-3"><i class="bi bi-exclamation-triangle"></i><div>Belum ada dokumen yang diunggah.</div></div>') +
           '<button class="btn btn-hantu w-100" onclick="unggahTatib()"><i class="bi bi-upload"></i> Unggah / Ganti PDF Tata Tertib</button>' +
         '</div></div>' +
-    '</div>' +
-  '</div>';
+    '';
 
-  document.getElementById('section-pengaturan').innerHTML = html + kartuPengaturanKop();
-  pratinjauTemplatEmail();   // v3.11
-  renderPengaturanKop();
+  const tombolTab = function (id, ikon, label) {
+    return '<button class="' + (tab === id ? 'aktif' : '') + '" onclick="gantiTabPengaturan(\'' + id + '\')"' +
+      ' aria-pressed="' + (tab === id) + '"><i class="bi ' + ikon + '"></i> ' + label + '</button>';
+  };
+  let isi;
+  if (tab === 'kop') {
+    isi = '<div class="tumpuk">' + kLogo + kartuPengaturanKop() + '</div>';
+  } else if (tab === 'email') {
+    isi = '<div class="grid-2">' +
+      '<div class="tumpuk">' + kNotifZona + kartuEmailTindakLanjut(c) + '</div>' +
+      '<div class="tumpuk">' + kartuFormatEmail(c) + '</div>' +
+    '</div>';
+  } else {
+    isi = '<div class="grid-2">' +
+      '<div class="tumpuk">' + kIdentitas + kKeamanan + '</div>' +
+      '<div class="tumpuk">' + kLinkSiswa + kAmbang + kTatib + '</div>' +
+    '</div>';
+  }
+
+  document.getElementById('section-pengaturan').innerHTML =
+    '<div class="judul-seksi">' +
+      '<div><h2>Pengaturan Aplikasi</h2><p>Identitas sekolah, kop surat, dan email notifikasi.</p></div>' +
+    '</div>' +
+    '<div class="tab-jalur tab-pengaturan" role="tablist">' +
+      tombolTab('umum', 'bi-building', 'Umum') +
+      tombolTab('kop', 'bi-layout-text-window-reverse', 'Kop Surat') +
+      tombolTab('email', 'bi-envelope-at', 'Notifikasi &amp; Email') +
+    '</div>' + isi;
+
+  if (tab === 'kop') renderPengaturanKop();
+  if (tab === 'email') pratinjauTemplatEmail();
+}
+
+/** Pindah sub-menu Pengaturan (v3.12) */
+function gantiTabPengaturan(tab) {
+  AppState.tabPengaturan = tab;
+  renderPengaturan();
+  const sek = document.getElementById('section-pengaturan');
+  if (sek && sek.getBoundingClientRect().top < 0) window.scrollTo(0, Math.max(0, window.scrollY + sek.getBoundingClientRect().top - 70));
 }
 
 // ── Pengaturan Kop Surat ──────────────────────────────────────────────
@@ -8623,7 +8673,7 @@ function cfgPratinjauKop() {
 function kartuPengaturanKop() {
   AppState.kopSusunan = bacaSusunanKop(AppState.konfigurasi);
 
-  return '<div class="card mt-3"><div class="card-header">' +
+  return '<div class="card"><div class="card-header">' +
       '<div><h5><i class="bi bi-layout-text-window-reverse"></i> Kop Surat</h5>' +
       '<p class="sub">Atur urutan, ukuran, dan ketebalan tiap baris kop</p></div>' +
       '<div class="kanan"><button class="btn btn-hantu btn-kecil" onclick="pulihkanSusunanKop()">' +
@@ -8639,7 +8689,7 @@ function kartuPengaturanKop() {
 
       '<div class="kotak-info mt-3"><i class="bi bi-info-circle"></i><div>' +
         'Baris yang isinya kosong tidak akan dicetak, walaupun dicentang. ' +
-        'Isi Nama Pemkab dan NPSN di kartu Identitas Sekolah di atas.<br>' +
+        'Nama Pemkab, nama sekolah, dan NPSN diisi di tab <b>Umum</b> → Identitas Sekolah.<br>' +
         'Urutan dapat diubah dengan menggeser, atau dengan menekan tombol panah ' +
         'atas/bawah setelah ikon pegangannya dipilih.</div></div>' +
 

@@ -6,6 +6,12 @@
   <!-- PWA (v3.10): bisa diinstal di HP & laptop -->
   <meta name="theme-color" content="#1e3a5f">
   <link rel="manifest" href="manifest.webmanifest">
+  <script>
+    // v3.12 — Link login siswa (?peran=siswa): bila dipasang sebagai aplikasi,
+    // ikonnya langsung membuka halaman masuk siswa
+    try { if (new URLSearchParams(location.search).get('peran') === 'siswa')
+      document.querySelector('link[rel="manifest"]').setAttribute('href', 'manifest-siswa.webmanifest'); } catch (e) {}
+  </script>
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <meta name="mobile-web-app-capable" content="yes">
@@ -24,7 +30,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 
   <!-- Gaya tampilan SIKAP BK -->
-  <link rel="stylesheet" href="css/style.css?v=3.11.0">
+  <link rel="stylesheet" href="css/style.css?v=3.12.0">
 </head>
 <body>
 
@@ -61,6 +67,11 @@
       <h3 class="mb-1">SIKAP BK</h3>
       <p class="text-secondary-2 mb-1" style="font-size:13px">Sistem Informasi Karakter dan Poin,<br>Bimbingan &amp; Konseling</p>
       <p class="mb-0" style="font-size:13px;font-weight:600" id="namaSekolahLogin">&nbsp;</p>
+    </div>
+
+    <!-- v3.12 — tampil hanya pada link login siswa (?peran=siswa) -->
+    <div class="label-mode-siswa" id="labelModeSiswa" hidden>
+      <i class="bi bi-mortarboard-fill"></i> Masuk Siswa / Orang Tua
     </div>
 
     <!-- Pemilih peran -->
@@ -334,10 +345,10 @@
      Menukar urutannya membuat aplikasi gagal dengan pesan
      "GAS_URL is not defined" atau "google is not defined".
      ══════════════════════════════════════════════════════════════ -->
-<script src="js/config.js?v=3.11.0"></script>
-<script src="js/api.js?v=3.11.0"></script>
-<script src="js/app.js?v=3.11.0"></script>
+<script src="js/config.js?v=3.12.0"></script>
+<script src="js/api.js?v=3.12.0"></script>
+<script src="js/app.js?v=3.12.0"></script>
 <!-- PWA: service worker, banner versi baru, tombol Instal (v3.10) -->
-<script src="pwa.js?v=3.11.0" defer></script>
+<script src="pwa.js?v=3.12.0" defer></script>
 </body>
 </html>
